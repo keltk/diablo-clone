@@ -5,7 +5,7 @@
 // ===================================================================
 //  CONSTANTS & HELPERS
 // ===================================================================
-const W = 1280, H = 720;          // canvas size
+let W = 1280, H = 720;            // logical canvas size (set by resize() to fit the window)
 const TS = 32;                    // tile size (px)
 const MW = 64, MH = 64;           // map size (tiles)
 const DT = 1 / 60;                // fixed timestep

@@ -11,7 +11,9 @@ let depth, kills, paused = false, invOpen = false, time = 0, hintT = 0;
 let mmCanvas, mmDirty = true;
 let bestDepth = 1;
 const cam = { x: 0, y: 0 };
-const mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false, mode: 'move', repath: 0 };
+const mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false, mode: 'move', repath: 0, touch: false };
+let lastPointerType = 'mouse';
+const touchDevice = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
 let fullMsgT = 0;
 
 try { bestDepth = parseInt(localStorage.getItem('tinydiablo_best') || '1', 10) || 1; } catch (e) { /* ignore */ }

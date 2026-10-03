@@ -111,7 +111,7 @@ function hurtPlayer(raw) {
   const dmg = Math.max(1, Math.round(raw * 20 / (20 + armorVal())));
   P.hp -= dmg; P.flash = 0.15;
   addText(P.x, P.y, String(dmg), '#ff4040', 16);
-  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.path = []; P.target = null; mouse.down = false; saveBest(); }
+  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deadTime = time; invOpen = false; P.path = []; P.target = null; mouse.down = false; saveBest(); }
 }
 
 function meleeAttack(e) {
@@ -122,10 +122,26 @@ function meleeAttack(e) {
   addEffect({ type: 'slash', x: P.x, y: P.y, a: P.face, dur: 0.15 });
 }
 
+function nearestEnemy(maxDist) {
+  let best = null, bd = maxDist;
+  for (const e of enemies) {
+    if (e.dead) continue;
+    const d = dist(P.x, P.y, e.x, e.y);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
+// Skills auto-aim at the nearest enemy; with none around, a mouse user aims at the cursor, otherwise we fire forward.
+function aimAngle() {
+  const t = nearestEnemy(520);
+  if (t) return Math.atan2(t.y - P.y, t.x - P.x);
+  if (lastPointerType === 'mouse') return Math.atan2(mouse.wy - P.y, mouse.wx - P.x);
+  return P.face;
+}
 function castFireball() {
   if (P.cd[0] > 0 || P.mp < 8 || P.dead) return;
   P.mp -= 8; P.cd[0] = 0.35;
-  const a = Math.atan2(mouse.wy - P.y, mouse.wx - P.x); P.face = a;
+  const a = aimAngle(); P.face = a;
   projectiles.push({ x: P.x, y: P.y, vx: Math.cos(a) * 480, vy: Math.sin(a) * 480, r: 7, life: 1.3, friendly: true,
     dmg: 10 + P.level * 4 + gear('dmg') * 0.5, color: '#ff8a1e' });
 }
@@ -159,19 +175,21 @@ function enemyShoot(e, a, speed, dmg) {
 // ===================================================================
 // Picking is done in SCREEN space against the projected sprites (mx,my = canvas coords).
 const enemyH = e => e.T.sz * (e.boss ? 1.5 : e.type === 'brute' ? 1.4 : 1.3);
-function enemyAt(mx, my) {
+function enemyAt(mx, my, pad) {
+  pad = pad || 0;
   let best = null, bk = -1e9;
   for (const e of enemies) {
     if (e.dead) continue;
     const sx = projX(e.x, e.y) - cam.x, sy = projY(e.x, e.y, 0) - cam.y, s = e.T.sz;
-    if (Math.abs(mx - sx) <= s * 0.85 && my >= sy - enemyH(e) - 4 && my <= sy + s * 0.45 && e.x + e.y > bk) { best = e; bk = e.x + e.y; }
+    if (Math.abs(mx - sx) <= s * 0.85 + pad && my >= sy - enemyH(e) - 4 - pad && my <= sy + s * 0.45 + pad && e.x + e.y > bk) { best = e; bk = e.x + e.y; }
   }
   return best;
 }
-function groundAt(mx, my) {
+function groundAt(mx, my, pad) {
+  pad = pad || 0;
   for (const g of ground) {
     const sx = projX(g.x, g.y) - cam.x, sy = projY(g.x, g.y, 6) - cam.y;
-    if (Math.abs(mx - sx) < 16 && Math.abs(my - sy) < 14) return g;
+    if (Math.abs(mx - sx) < 16 + pad && Math.abs(my - sy) < 14 + pad) return g;
   }
   return null;
 }
@@ -199,6 +217,11 @@ function updatePlayer(dt) {
   } else if (P.pickup) {
     if (!ground.includes(P.pickup)) P.pickup = null;
     else if (P.repathT <= 0) { P.path = pathTo(P, P.pickup.x, P.pickup.y); P.repathT = 0.3; }
+  }
+  // auto-attack: hit the nearest enemy in melee range (no click needed), even while walking
+  if (P.atkCd <= 0) {
+    const n = nearestEnemy(MELEE_RANGE + P.r + 14);
+    if (n && dist(P.x, P.y, n.x, n.y) <= MELEE_RANGE + n.r + P.r) meleeAttack(n);
   }
   const ox = P.x, oy = P.y;
   followPath(P, P.path, P.speed, dt);

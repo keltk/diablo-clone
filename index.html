@@ -2,17 +2,22 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Tiny Diablo</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  body { display: flex; align-items: center; justify-content: center; }
-  canvas { display: block; background: #000; cursor: crosshair; }
+  html, body { margin: 0; width: 100%; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none;
+    position: fixed; inset: 0; touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+  canvas { display: block; position: absolute; left: 0; top: 0; background: #000; cursor: crosshair; touch-action: none; }
 </style>
 </head>
 <body>
 <canvas id="c" width="1280" height="720"></canvas>
 <script src="js/util.js"></script>
 <script src="js/state.js"></script>
+<script src="js/layout.js"></script>
 <script src="js/map.js"></script>
 <script src="js/items.js"></script>
 <script src="js/entities.js"></script>

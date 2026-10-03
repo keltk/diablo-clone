@@ -14,10 +14,10 @@ function frame(now) {
 }
 
 mmCanvas = document.createElement('canvas'); mmCanvas.width = MW * 2; mmCanvas.height = MH * 2;
-makeVignette(); resize();
+resize();
 newRun();
 update(0);
 requestAnimationFrame(t => { last = t; frame(t); });
 
 // test/debug hook (harmless)
-window.__game = { update, render, get state() { return { P, enemies, ground, depth, map, rooms, stairs, mouse, newRun, buildLevel, genItem, findPath }; } };
+window.__game = { update, render, get state() { return { P, enemies, ground, depth, map, rooms, stairs, mouse, HUD, PANEL, VZ, W, H, invOpen, paused, newRun, pressButton, buildLevel, genItem, findPath }; } };

@@ -18,7 +18,7 @@ function box(x, y, w, h, fill, stroke) {
 
 let vignette;
 function makeVignette() {
-  vignette = ctx.createRadialGradient(W / 2, H / 2, 140, W / 2, H / 2, 540);
+  vignette = ctx.createRadialGradient(W / 2, H / 2, 140, W / 2, H / 2, clamp(Math.hypot(W, H) * 0.4, 400, 620));
   vignette.addColorStop(0, 'rgba(0,0,0,0)');
   vignette.addColorStop(1, 'rgba(0,0,0,0.88)');
 }
@@ -174,8 +174,9 @@ function drawWorld() {
   for (const f of effects) drawEffect(f);
 
   // collect entities
-  const hov = (!P.dead && !invOpen) ? enemyAt(mouse.x, mouse.y) : null;
-  const hovG = (!P.dead && !invOpen) ? groundAt(mouse.x, mouse.y) : null;
+  const showHover = !P.dead && !invOpen && !(mouse.touch && !mouse.down);
+  const hov = showHover ? enemyAt(mouse.x, mouse.y) : null;
+  const hovG = showHover ? groundAt(mouse.x, mouse.y) : null;
   const onScreen = (x, y) => { const sx = projX(x, y) - cam.x, sy = projY(x, y, 0) - cam.y; return sx > -80 && sx < W + 80 && sy > -120 && sy < H + 80; };
   for (const g of ground) if (onScreen(g.x, g.y)) draws.push({ k: (g.x + g.y) / TS, t: 1, o: g });
   for (const e of enemies) {
@@ -202,7 +203,7 @@ function drawWorld() {
   // floating texts (always on top)
   for (const t of texts) {
     ctx.globalAlpha = clamp(2 * (1 - t.t / t.dur), 0, 1);
-    text(t.s, projX(t.x, t.y) - cam.x, projY(t.x, t.y, 40 + t.dz) - cam.y, t.color, t.size, 'center');
+    text(t.s, projX(t.x, t.y) - cam.x, projY(t.x, t.y, 40 + t.dz) - cam.y, t.color, Math.round(t.size * Math.max(1, 0.9 / VZ)), 'center');
   }
   ctx.globalAlpha = 1;
 }
