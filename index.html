@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tiny Diablo</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; background: #000; cursor: crosshair; }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720"></canvas>
+<script>
+'use strict';
+(() => {
+  // ===================================================================
+  //  CONSTANTS & HELPERS
+  // ===================================================================
+  const W = 1280, H = 720;          // canvas size
+  const TS = 32;                    // tile size (px)
+  const MW = 64, MH = 64;           // map size (tiles)
+  const DT = 1 / 60;                // fixed timestep
+  const MELEE_RANGE = 26;           // melee reach beyond body radii
+  const INV_SIZE = 16;
+  const RARITY_COLOR = ['#e8e8e8', '#4a8cff', '#ffd93b'];
+  const RARITY_NAME = ['Common', 'Magic', 'Rare'];
+
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const dist = (ax, ay, bx, by) => Math.hypot(ax - bx, ay - by);
+
+  function mulberry32(a) {
+    return function () {
+      a |= 0; a = a + 0x6D2B79F5 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
+  let seed = 0, rnd = Math.random;
+  const ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+  const pick = arr => arr[Math.floor(rnd() * arr.length)];
+
+  // ===================================================================
+  //  GAME STATE
+  // ===================================================================
+  let map, explored, rooms, stairs;
+  let P, enemies, ground, projectiles, effects, texts, messages;
+  let depth, kills, paused = false, invOpen = false, time = 0, hintT = 0;
+  let mmCanvas, mmDirty = true;
+  let bestDepth = 1;
+  const cam = { x: 0, y: 0 };
+  const mouse = { x: 0, y: 0, wx: 0, wy: 0, down: false, mode: 'move', repath: 0 };
+  let fullMsgT = 0;
+
+  try { bestDepth = parseInt(localStorage.getItem('tinydiablo_best') || '1', 10) || 1; } catch (e) { /* ignore */ }
+  function saveBest() {
+    if (depth > bestDepth) {
+      bestDepth = depth;
+      try { localStorage.setItem('tinydiablo_best', String(bestDepth)); } catch (e) { /* ignore */ }
+    }
+  }
+
+  // ===================================================================
+  //  ENEMY TYPES
+  // ===================================================================
+  const TYPES = {
+    grunt:  { name: 'Grunt',  color: '#c0392b', r: 9,  sz: 20, hp: 30,  dmg: 6,  spd: 110, aggro: 250, cd: 0.9, xp: 10 },
+    brute:  { name: 'Brute',  color: '#8e44ad', r: 12, sz: 28, hp: 100, dmg: 15, spd: 55,  aggro: 220, cd: 1.4, xp: 26 },
+    archer: { name: 'Archer', color: '#27ae60', r: 9,  sz: 20, hp: 24,  dmg: 8,  spd: 80,  aggro: 340, cd: 1.7, xp: 18, ranged: true },
+    boss:   { name: 'Overlord', color: '#e91e63', r: 14, sz: 46, hp: 600, dmg: 20, spd: 80, aggro: 600, cd: 1.1, xp: 220, boss: true }
+  };
+
+  // ===================================================================
+  //  DUNGEON GENERATION
+  // ===================================================================
+  function generateDungeon() {
+    map = new Uint8Array(MW * MH).fill(1);
+    explored = new Uint8Array(MW * MH);
+    rooms = [];
+    for (let tries = 0; tries < 200 && rooms.length < 12; tries++) {
+      const w = ri(5, 11), h = ri(5, 9);
+      const x = ri(2, MW - w - 3), y = ri(2, MH - h - 3);
+      let ok = true;
+      for (const r of rooms) {
+        if (x < r.x + r.w + 2 && x + w + 2 > r.x && y < r.y + r.h + 2 && y + h + 2 > r.y) { ok = false; break; }
+      }
+      if (!ok) continue;
+      rooms.push({ x, y, w, h, cx: x + (w >> 1), cy: y + (h >> 1) });
+    }
+    for (const r of rooms) for (let j = r.y; j < r.y + r.h; j++) for (let i = r.x; i < r.x + r.w; i++) map[j * MW + i] = 0;
+    for (let i = 1; i < rooms.length; i++) carveCorridor(rooms[i - 1], rooms[i]);
+    for (let i = 0; i < 3 && rooms.length > 3; i++) carveCorridor(pick(rooms), pick(rooms)); // loops
+    // stairs in the room farthest from the start
+    let far = rooms[0];
+    for (const r of rooms) if (dist(r.cx, r.cy, rooms[0].cx, rooms[0].cy) > dist(far.cx, far.cy, rooms[0].cx, rooms[0].cy)) far = r;
+    far.stairs = true;
+    stairs = { tx: far.cx, ty: far.cy };
+    map[stairs.ty * MW + stairs.tx] = 2;
+  }
+
+  function carveCorridor(a, b) {
+    let x = a.cx, y = a.cy;
+    const horizFirst = rnd() < 0.5;
+    const stepX = () => { while (x !== b.cx) { map[y * MW + x] = 0; map[(y + 1) * MW + x] = 0; x += Math.sign(b.cx - x); } };
+    const stepY = () => { while (y !== b.cy) { map[y * MW + x] = 0; map[y * MW + x + 1] = 0; y += Math.sign(b.cy - y); } };
+    if (horizFirst) { stepX(); stepY(); } else { stepY(); stepX(); }
+    map[y * MW + x] = 0; map[(y + 1) * MW + x] = 0; map[y * MW + x + 1] = 0;
+  }
+
+  // ===================================================================
+  //  COLLISION, LINE-OF-SIGHT, PATHFINDING
+  // ===================================================================
+  function solid(px, py) {
+    const tx = Math.floor(px / TS), ty = Math.floor(py / TS);
+    if (tx < 0 || ty < 0 || tx >= MW || ty >= MH) return true;
+    return map[ty * MW + tx] === 1;
+  }
+  const blocked = (x, y, r) => solid(x - r, y - r) || solid(x + r, y - r) || solid(x - r, y + r) || solid(x + r, y + r);
+  function moveEnt(e, dx, dy) {          // axis-separated => wall sliding
+    if (!blocked(e.x + dx, e.y, e.r)) e.x += dx;
+    if (!blocked(e.x, e.y + dy, e.r)) e.y += dy;
+  }
+  function clearLine(ax, ay, bx, by, r) {
+    const d = dist(ax, ay, bx, by), n = Math.ceil(d / 6);
+    for (let k = 1; k <= n; k++) {
+      const t = k / n;
+      if (blocked(ax + (bx - ax) * t, ay + (by - ay) * t, r)) return false;
+    }
+    return true;
+  }
+  const walkable = (tx, ty) => tx >= 0 && ty >= 0 && tx < MW && ty < MH && map[ty * MW + tx] !== 1;
+
+  // tiny binary heap keyed on f
+  class Heap {
+    constructor() { this.a = []; }
+    push(f, v) {
+      const a = this.a; a.push([f, v]); let i = a.length - 1;
+      while (i > 0) { const p = (i - 1) >> 1; if (a[p][0] <= a[i][0]) break; [a[p], a[i]] = [a[i], a[p]]; i = p; }
+    }
+    pop() {
+      const a = this.a, top = a[0], last = a.pop();
+      if (a.length) {
+        a[0] = last; let i = 0;
+        for (;;) {
+          let l = 2 * i + 1, r = l + 1, m = i;
+          if (l < a.length && a[l][0] < a[m][0]) m = l;
+          if (r < a.length && a[r][0] < a[m][0]) m = r;
+          if (m === i) break;
+          [a[m], a[i]] = [a[i], a[m]]; i = m;
+        }
+      }
+      return top;
+    }
+    get size() { return this.a.length; }
+  }
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+  // Grid A* (8-dir, no corner cutting). If goal is unreachable, heads to the closest tile reached.
+  function findPath(sx, sy, gx, gy, r) {
+    const stx = clamp(Math.floor(sx / TS), 0, MW - 1), sty = clamp(Math.floor(sy / TS), 0, MH - 1);
+    const gtx = clamp(Math.floor(gx / TS), 0, MW - 1), gty = clamp(Math.floor(gy / TS), 0, MH - 1);
+    const goalOk = walkable(gtx, gty);
+    const start = sty * MW + stx;
+    const g = new Float32Array(MW * MH).fill(1e9), parent = new Int32Array(MW * MH).fill(-1), closed = new Uint8Array(MW * MH);
+    const hfn = (x, y) => { const dx = Math.abs(x - gtx), dy = Math.abs(y - gty); return dx + dy - 0.586 * Math.min(dx, dy); };
+    const heap = new Heap(); g[start] = 0; heap.push(hfn(stx, sty), start);
+    let best = start, bestH = hfn(stx, sty), found = -1;
+    while (heap.size) {
+      const cur = heap.pop()[1];
+      if (closed[cur]) continue;
+      closed[cur] = 1;
+      const cx = cur % MW, cy = (cur / MW) | 0;
+      if (cx === gtx && cy === gty) { found = cur; break; }
+      const hh = hfn(cx, cy);
+      if (hh < bestH) { bestH = hh; best = cur; }
+      for (const [dx, dy] of DIRS) {
+        const nx = cx + dx, ny = cy + dy;
+        if (!walkable(nx, ny)) continue;
+        if (dx && dy && (!walkable(cx + dx, cy) || !walkable(cx, cy + dy))) continue;
+        const ni = ny * MW + nx;
+        if (closed[ni]) continue;
+        const ng = g[cur] + (dx && dy ? 1.414 : 1);
+        if (ng < g[ni]) { g[ni] = ng; parent[ni] = cur; heap.push(ng + hfn(nx, ny), ni); }
+      }
+    }
+    let end = found >= 0 ? found : best;
+    const pts = [];
+    for (let c = end; c !== start && c >= 0; c = parent[c]) pts.push({ x: (c % MW) * TS + TS / 2, y: ((c / MW) | 0) * TS + TS / 2 });
+    pts.reverse();
+    if (found >= 0 && goalOk && pts.length) pts[pts.length - 1] = { x: gx, y: gy };
+    // string-pulling: drop waypoints that can be skipped with a clear line
+    const out = []; let cx = sx, cy = sy, i = 0;
+    while (i < pts.length) {
+      let j = pts.length - 1;
+      while (j > i && !clearLine(cx, cy, pts[j].x, pts[j].y, r)) j--;
+      out.push(pts[j]); cx = pts[j].x; cy = pts[j].y; i = j + 1;
+    }
+    return out;
+  }
+  function pathTo(e, x, y) {
+    if (clearLine(e.x, e.y, x, y, e.r)) return [{ x, y }];
+    return findPath(e.x, e.y, x, y, e.r);
+  }
+  function followPath(e, path, speed, dt) {   // returns true if moved
+    if (!path.length) return false;
+    const wp = path[0], d = dist(e.x, e.y, wp.x, wp.y), step = speed * dt;
+    if (d <= step) { moveEnt(e, wp.x - e.x, wp.y - e.y); path.shift(); return true; }
+    const ox = e.x, oy = e.y;
+    moveEnt(e, (wp.x - e.x) / d * step, (wp.y - e.y) / d * step);
+    if (Math.abs(e.x - ox) + Math.abs(e.y - oy) < 0.01) path.shift(); // stuck against a wall: give up this waypoint
+    return true;
+  }
+
+  // ===================================================================
+  //  ITEMS
+  // ===================================================================
+  const WEAPONS = ['Dagger', 'Sword', 'Axe', 'Mace', 'Blade', 'Cleaver'];
+  const ARMORS = ['Rags', 'Jerkin', 'Chain Mail', 'Breastplate', 'Plate Mail'];
+  const PRE_BLUE = ['Sturdy', 'Fine', 'Keen', 'Hardened'];
+  const PRE_YELLOW = ['Doom', 'Dread', 'Ember', 'Soul', 'Grim'];
+  const SUF_YELLOW = ['of Fury', 'of the Bear', 'of Woe', 'of Ages'];
+
+  function genItem(d, minRar) {
+    const r = rnd();
+    let rar = r < 0.06 + 0.01 * d ? 2 : r < 0.30 + 0.02 * d ? 1 : 0;
+    rar = Math.max(rar, minRar || 0);
+    const slot = rnd() < 0.5 ? 'weapon' : 'armor';
+    const mult = [1, 1.35, 1.8][rar];
+    const it = { slot, rar, dmg: 0, armor: 0, hp: 0 };
+    let base;
+    if (slot === 'weapon') {
+      base = pick(WEAPONS);
+      it.dmg = Math.max(1, Math.round((2 + d * 1.6 + ri(0, 3)) * mult));
+      if (rar === 2) it.armor = ri(1, 3) + d;
+    } else {
+      base = pick(ARMORS);
+      it.armor = Math.max(1, Math.round((2 + d * 1.8 + ri(0, 2)) * mult));
+      if (rar === 2) it.dmg = ri(1, 2) + (d >> 1);
+    }
+    if (rar >= 1) it.hp = Math.round((ri(5, 12) + d * 3) * (rar === 2 ? 1.6 : 1));
+    it.name = rar === 0 ? base : rar === 1 ? pick(PRE_BLUE) + ' ' + base : pick(PRE_YELLOW) + ' ' + base + ' ' + pick(SUF_YELLOW);
+    it.value = Math.round(it.dmg * 5 + it.armor * 4 + it.hp * 0.5) + rar * 10;
+    return it;
+  }
+
+  // ===================================================================
+  //  PLAYER STATS
+  // ===================================================================
+  const gear = k => ((P.weapon && P.weapon[k]) || 0) + ((P.armor && P.armor[k]) || 0);
+  const baseDmg = () => 4 + 2 * (P.level - 1) + gear('dmg');
+  const armorVal = () => gear('armor');
+  function recalc() {
+    P.maxhp = 100 + 15 * (P.level - 1) + gear('hp');
+    P.maxmp = 50 + 8 * (P.level - 1);
+    P.hp = Math.min(P.hp, P.maxhp);
+    P.mp = Math.min(P.mp, P.maxmp);
+  }
+  const xpNeed = lv => Math.round(40 * Math.pow(lv, 1.5));
+
+  function gainXp(n) {
+    P.xp += n;
+    while (P.xp >= xpNeed(P.level)) {
+      P.xp -= xpNeed(P.level);
+      P.level++;
+      recalc();
+      P.hp = P.maxhp; P.mp = P.maxmp;
+      addText(P.x, P.y - 24, 'LEVEL UP!', '#ffe14d', 20, 1.6);
+      addEffect({ type: 'ring', x: P.x, y: P.y, r0: 10, r1: 90, dur: 0.6, color: '255,225,77' });
+      msg('You reached level ' + P.level + '!');
+    }
+  }
+
+  // ===================================================================
+  //  LEVEL / RUN SETUP
+  // ===================================================================
+  function newRun() {
+    seed = (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+    rnd = mulberry32(seed);
+    depth = 1; kills = 0;
+    P = {
+      x: 0, y: 0, r: 10, speed: 170,
+      hp: 100, maxhp: 100, mp: 50, maxmp: 50, level: 1, xp: 0, gold: 0,
+      flash: 0, atkCd: 0, potCd: 0, cd: [0, 0], path: [], target: null, pickup: null, repathT: 0,
+      potions: { hp: 2, mp: 1 }, inv: [], face: 0, dead: false, swing: 0,
+      weapon: { slot: 'weapon', rar: 0, name: 'Rusty Sword', dmg: 3, armor: 0, hp: 0, value: 5 },
+      armor: null
+    };
+    recalc(); P.hp = P.maxhp; P.mp = P.maxmp;
+    messages = []; texts = [];
+    invOpen = false; hintT = 20;
+    buildLevel();
+  }
+
+  function buildLevel() {
+    generateDungeon();
+    enemies = []; ground = []; projectiles = []; effects = [];
+    const start = rooms[0];
+    P.x = start.cx * TS + TS / 2; P.y = start.cy * TS + TS / 2;
+    P.path = []; P.target = null; P.pickup = null;
+    // populate rooms
+    for (let i = 1; i < rooms.length; i++) {
+      const r = rooms[i];
+      const n = Math.min(6, ri(1, 2) + (depth >> 1) + (r.stairs ? 1 : 0));
+      for (let k = 0; k < n; k++) {
+        const t = rnd(), type = t < 0.15 + 0.03 * depth ? 'archer' : (depth >= 2 && t < 0.45) ? 'brute' : 'grunt';
+        spawnEnemy(type, r);
+      }
+    }
+    if (depth % 3 === 0) {
+      const r = rooms.find(q => q.stairs);
+      const b = spawnEnemy('boss', r, r.cx * TS + TS / 2, r.cy * TS + TS / 2 - TS * 1.5);
+      b.aggro = false;
+      msg('A powerful presence lurks near the stairs...');
+    }
+    for (let i = 0; i < MW * MH; i++) explored[i] = 0;
+    mmDirty = true; reveal();
+    msg('Depth ' + depth);
+    saveBest();
+  }
+
+  function spawnEnemy(type, room, x, y) {
+    const T = TYPES[type], mult = 1 + 0.3 * (depth - 1);
+    if (x === undefined) {
+      x = (room.x + ri(0, room.w - 1)) * TS + TS / 2;
+      y = (room.y + ri(0, room.h - 1)) * TS + TS / 2;
+    }
+    const e = {
+      type, T, x, y, r: T.r, hp: Math.round(T.hp * mult), maxhp: Math.round(T.hp * mult),
+      dmg: T.dmg * mult, atk: 0.5 + rnd(), flash: 0, aggro: false, path: [], pathT: rnd() * 0.5,
+      boss: !!T.boss, dead: false, burstT: 3
+    };
+    enemies.push(e);
+    return e;
+  }
+
+  function reveal() {
+    const ptx = Math.floor(P.x / TS), pty = Math.floor(P.y / TS), R = 8;
+    for (let j = pty - R; j <= pty + R; j++) for (let i = ptx - R; i <= ptx + R; i++) {
+      if (i < 0 || j < 0 || i >= MW || j >= MH) continue;
+      if ((i - ptx) * (i - ptx) + (j - pty) * (j - pty) > R * R) continue;
+      if (!explored[j * MW + i]) { explored[j * MW + i] = 1; mmDirty = true; }
+    }
+  }
+
+  // ===================================================================
+  //  EFFECTS, TEXT, MESSAGES
+  // ===================================================================
+  function addText(x, y, s, color, size, dur) { texts.push({ x, y, s, color, size: size || 14, t: 0, dur: dur || 0.9 }); }
+  function addEffect(e) { e.t = 0; effects.push(e); }
+  function msg(s) { messages.push({ s, t: 0 }); if (messages.length > 4) messages.shift(); }
+
+  // ===================================================================
+  //  COMBAT
+  // ===================================================================
+  function hurtEnemy(e, dmg, crit) {
+    if (e.dead) return;
+    dmg = Math.max(1, Math.round(dmg));
+    e.hp -= dmg; e.flash = 0.12; e.aggro = true;
+    addText(e.x + (rnd() - 0.5) * 10, e.y - e.T.sz / 2, String(dmg), crit ? '#ffb020' : '#ffffff', crit ? 20 : 14);
+    if (e.hp <= 0) killEnemy(e);
+  }
+
+  function killEnemy(e) {
+    e.dead = true; kills++;
+    gainXp(Math.round(e.T.xp * (1 + 0.2 * (depth - 1))));
+    const scatter = () => ({ x: e.x + (rnd() - 0.5) * 28, y: e.y + (rnd() - 0.5) * 28 });
+    const drop = (o) => { const p = scatter(); if (blocked(p.x, p.y, 6)) { p.x = e.x; p.y = e.y; } o.x = p.x; o.y = p.y; o.t = rnd() * 6; ground.push(o); };
+    if (e.boss || rnd() < 0.7) drop({ kind: 'gold', amount: Math.round(ri(3, 9) * (1 + depth * 0.5) * (e.boss ? 8 : 1)) });
+    if (e.boss) { drop({ kind: 'item', item: genItem(depth, 2) }); drop({ kind: 'item', item: genItem(depth, 1) }); drop({ kind: 'hp' }); drop({ kind: 'mp' }); }
+    else {
+      if (rnd() < 0.22 + (e.type === 'brute' ? 0.1 : 0)) drop({ kind: 'item', item: genItem(depth) });
+      if (rnd() < 0.14) drop({ kind: rnd() < 0.6 ? 'hp' : 'mp' });
+    }
+    if (e.boss) { msg('The Overlord is slain! The stairs are unlocked.'); addEffect({ type: 'ring', x: e.x, y: e.y, r0: 10, r1: 220, dur: 0.8, color: '255,80,120' }); }
+  }
+
+  function hurtPlayer(raw) {
+    if (P.dead) return;
+    const dmg = Math.max(1, Math.round(raw * 20 / (20 + armorVal())));
+    P.hp -= dmg; P.flash = 0.15;
+    addText(P.x, P.y - 20, String(dmg), '#ff4040', 16);
+    if (P.hp <= 0) { P.hp = 0; P.dead = true; P.path = []; P.target = null; mouse.down = false; saveBest(); }
+  }
+
+  function meleeAttack(e) {
+    P.atkCd = 0.45; P.swing = 0.15;
+    P.face = Math.atan2(e.y - P.y, e.x - P.x);
+    const crit = rnd() < 0.1;
+    hurtEnemy(e, baseDmg() * (0.8 + rnd() * 0.4) * (crit ? 2 : 1), crit);
+    addEffect({ type: 'slash', x: P.x, y: P.y, a: P.face, dur: 0.15 });
+  }
+
+  function castFireball() {
+    if (P.cd[0] > 0 || P.mp < 8 || P.dead) return;
+    P.mp -= 8; P.cd[0] = 0.35;
+    const a = Math.atan2(mouse.wy - P.y, mouse.wx - P.x); P.face = a;
+    projectiles.push({ x: P.x, y: P.y, vx: Math.cos(a) * 480, vy: Math.sin(a) * 480, r: 7, life: 1.3, friendly: true,
+      dmg: 10 + P.level * 4 + gear('dmg') * 0.5, color: '#ff8a1e' });
+  }
+  function castNova() {
+    if (P.cd[1] > 0 || P.mp < 25 || P.dead) return;
+    P.mp -= 25; P.cd[1] = 2.5;
+    const R = 150, dmg = 8 + P.level * 3 + gear('dmg') * 0.5;
+    addEffect({ type: 'ring', x: P.x, y: P.y, r0: 10, r1: R, dur: 0.4, color: '110,190,255' });
+    for (const e of enemies) if (!e.dead && dist(e.x, e.y, P.x, P.y) <= R + e.r) hurtEnemy(e, dmg * (0.85 + rnd() * 0.3));
+  }
+  function usePotion(kind) {
+    if (P.dead || P.potCd > 0 || P.potions[kind] <= 0) return;
+    if (kind === 'hp') {
+      if (P.hp >= P.maxhp) return;
+      const h = Math.round(P.maxhp * 0.5); P.hp = Math.min(P.maxhp, P.hp + h);
+      addText(P.x, P.y - 24, '+' + h, '#5cff6a', 16);
+    } else {
+      if (P.mp >= P.maxmp) return;
+      const m = Math.round(P.maxmp * 0.5); P.mp = Math.min(P.maxmp, P.mp + m);
+      addText(P.x, P.y - 24, '+' + m + ' MP', '#6ab4ff', 16);
+    }
+    P.potions[kind]--; P.potCd = 0.8;
+  }
+
+  function enemyShoot(e, a, speed, dmg) {
+    projectiles.push({ x: e.x, y: e.y, vx: Math.cos(a) * speed, vy: Math.sin(a) * speed, r: 5, life: 2.5, friendly: false, dmg, color: '#ff5533' });
+  }
+
+  // ===================================================================
+  //  UPDATE
+  // ===================================================================
+  function enemyAt(wx, wy) {
+    let best = null, bd = 1e9;
+    for (const e of enemies) {
+      if (e.dead) continue;
+      const d = dist(wx, wy, e.x, e.y);
+      if (d < e.T.sz / 2 + 6 && d < bd) { best = e; bd = d; }
+    }
+    return best;
+  }
+  function groundAt(wx, wy) {
+    for (const g of ground) if (dist(wx, wy, g.x, g.y) < 16) return g;
+    return null;
+  }
+
+  function updatePlayer(dt) {
+    P.flash = Math.max(0, P.flash - dt); P.atkCd = Math.max(0, P.atkCd - dt); P.potCd = Math.max(0, P.potCd - dt);
+    P.swing = Math.max(0, P.swing - dt);
+    P.cd[0] = Math.max(0, P.cd[0] - dt); P.cd[1] = Math.max(0, P.cd[1] - dt);
+    P.mp = Math.min(P.maxmp, P.mp + (3 + P.level * 0.2) * dt);
+    P.repathT -= dt;
+
+    if (mouse.down && mouse.mode === 'move' && P.repathT <= 0) {
+      P.path = pathTo(P, mouse.wx, mouse.wy); P.repathT = 0.1;
+    }
+    if (P.target) {
+      const e = P.target;
+      if (e.dead) { P.target = null; if (mouse.down) mouse.mode = 'move'; }
+      else {
+        const d = dist(P.x, P.y, e.x, e.y);
+        if (d <= MELEE_RANGE + e.r + P.r) {
+          P.path = []; P.face = Math.atan2(e.y - P.y, e.x - P.x);
+          if (P.atkCd <= 0) meleeAttack(e);
+        } else if (P.repathT <= 0) { P.path = pathTo(P, e.x, e.y); P.repathT = 0.25; }
+      }
+    } else if (P.pickup) {
+      if (!ground.includes(P.pickup)) P.pickup = null;
+      else if (P.repathT <= 0) { P.path = pathTo(P, P.pickup.x, P.pickup.y); P.repathT = 0.3; }
+    }
+    const ox = P.x, oy = P.y;
+    followPath(P, P.path, P.speed, dt);
+    if (P.x !== ox || P.y !== oy) P.face = Math.atan2(P.y - oy, P.x - ox);
+
+    // pickups
+    for (let i = ground.length - 1; i >= 0; i--) {
+      const g = ground[i];
+      if (dist(P.x, P.y, g.x, g.y) > 24) continue;
+      if (g.kind === 'gold') { P.gold += g.amount; addText(P.x, P.y - 20, '+' + g.amount + ' gold', '#f5c518', 13); }
+      else if (g.kind === 'hp') { P.potions.hp++; addText(P.x, P.y - 20, 'Health potion', '#ff7777', 13); }
+      else if (g.kind === 'mp') { P.potions.mp++; addText(P.x, P.y - 20, 'Mana potion', '#77aaff', 13); }
+      else if (g.kind === 'item') {
+        if (P.inv.length >= INV_SIZE) { if (time > fullMsgT) { msg('Inventory full!'); fullMsgT = time + 1.5; } continue; }
+        P.inv.push(g.item); addText(P.x, P.y - 20, g.item.name, RARITY_COLOR[g.item.rar], 13, 1.4);
+      }
+      if (P.pickup === g) P.pickup = null;
+      ground.splice(i, 1);
+    }
+
+    // stairs
+    const tx = Math.floor(P.x / TS), ty = Math.floor(P.y / TS);
+    if (tx === stairs.tx && ty === stairs.ty) {
+      if (enemies.some(e => e.boss && !e.dead)) { if (time > fullMsgT) { msg('The stairs are sealed until the Overlord dies.'); fullMsgT = time + 2; } }
+      else { depth++; buildLevel(); }
+    }
+    reveal();
+  }
+
+  function updateEnemies(dt) {
+    for (const e of enemies) {
+      if (e.dead) continue;
+      e.atk -= dt; e.flash = Math.max(0, e.flash - dt); e.pathT -= dt;
+      const T = e.T, d = dist(e.x, e.y, P.x, P.y);
+      if (!e.aggro) {
+        if (!P.dead && d < T.aggro && (d < 110 || clearLine(e.x, e.y, P.x, P.y, 2))) e.aggro = true;
+        else continue;
+      } else if (d > T.aggro * 2.5 || P.dead) { e.aggro = false; continue; }
+
+      const los = clearLine(e.x, e.y, P.x, P.y, 2);
+      const chase = () => {
+        if (clearLine(e.x, e.y, P.x, P.y, e.r)) { e.path = [{ x: P.x, y: P.y }]; }
+        else if (e.pathT <= 0 || !e.path.length) { e.path = findPath(e.x, e.y, P.x, P.y, e.r); e.pathT = 0.5; }
+        followPath(e, e.path, T.spd, dt);
+      };
+      if (T.ranged) {
+        if (d < 150 && los) {                       // keep distance
+          moveEnt(e, (e.x - P.x) / d * T.spd * dt, (e.y - P.y) / d * T.spd * dt);
+        } else if (d <= 330 && los) {
+          if (e.atk <= 0) { enemyShoot(e, Math.atan2(P.y - e.y, P.x - e.x), 230, e.dmg); e.atk = T.cd; }
+        } else chase();
+      } else {
+        if (d <= e.r + P.r + 10) {
+          if (e.atk <= 0) { hurtPlayer(e.dmg * (0.85 + rnd() * 0.3)); e.atk = T.cd; }
+        } else chase();
+      }
+      if (e.boss) {                                  // radial burst
+        e.burstT -= dt;
+        if (e.burstT <= 0) {
+          e.burstT = e.hp < e.maxhp * 0.5 ? 2 : 3.2;
+          const off = rnd() * 6.28;
+          for (let k = 0; k < 12; k++) enemyShoot(e, off + k * Math.PI / 6, 190, e.dmg * 0.5);
+          addEffect({ type: 'ring', x: e.x, y: e.y, r0: 10, r1: 60, dur: 0.3, color: '255,80,50' });
+        }
+      }
+    }
+    // separation so enemies don't stack
+    for (let i = 0; i < enemies.length; i++) {
+      const a = enemies[i]; if (a.dead || !a.aggro) continue;
+      for (let j = i + 1; j < enemies.length; j++) {
+        const b = enemies[j]; if (b.dead) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy), m = a.r + b.r;
+        if (d > 0.001 && d < m) { const p = (m - d) / 2 / d; moveEnt(a, -dx * p, -dy * p); moveEnt(b, dx * p, dy * p); }
+      }
+    }
+    enemies = enemies.filter(e => !e.dead);
+  }
+
+  function updateProjectiles(dt) {
+    for (const p of projectiles) {
+      p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+      let hit = p.life <= 0 || solid(p.x, p.y);
+      if (!hit && p.friendly) {
+        for (const e of enemies) if (!e.dead && dist(p.x, p.y, e.x, e.y) < e.r + p.r) { hit = true; break; }
+      } else if (!hit && !P.dead && dist(p.x, p.y, P.x, P.y) < P.r + p.r) {
+        hit = true; hurtPlayer(p.dmg);
+      }
+      if (hit) {
+        p.dead = true;
+        if (p.friendly) {
+          const R = 52;
+          addEffect({ type: 'ring', x: p.x, y: p.y, r0: 6, r1: R, dur: 0.25, color: '255,140,30' });
+          for (const e of enemies) if (!e.dead && dist(p.x, p.y, e.x, e.y) < R + e.r) hurtEnemy(e, p.dmg * (0.85 + rnd() * 0.3));
+        }
+      }
+    }
+    projectiles = projectiles.filter(p => !p.dead);
+  }
+
+  function update(dt) {
+    if (paused) return;
+    time += dt; hintT = Math.max(0, hintT - dt);
+    if (!P.dead) updatePlayer(dt);
+    updateEnemies(dt);
+    updateProjectiles(dt);
+    for (const t of texts) { t.t += dt; t.y -= 28 * dt; }
+    texts = texts.filter(t => t.t < t.dur);
+    for (const f of effects) f.t += dt;
+    effects = effects.filter(f => f.t < f.dur);
+    for (const m of messages) m.t += dt;
+    messages = messages.filter(m => m.t < 4);
+    // camera
+    cam.x = Math.round(P.x - W / 2); cam.y = Math.round(P.y - H / 2);
+    mouse.wx = mouse.x + cam.x; mouse.wy = mouse.y + cam.y;
+  }
+
+  // ===================================================================
+  //  INVENTORY UI (geometry shared by input + render)
+  // ===================================================================
+  const PANEL = { x: W / 2 - 270, y: 80, w: 540, h: 400 };
+  const slotRect = {
+    weapon: { x: PANEL.x + 30, y: PANEL.y + 80, w: 64, h: 64 },
+    armor:  { x: PANEL.x + 30, y: PANEL.y + 190, w: 64, h: 64 }
+  };
+  function invRect(i) { return { x: PANEL.x + 190 + (i % 4) * 78, y: PANEL.y + 70 + Math.floor(i / 4) * 78, w: 68, h: 68 }; }
+  const inRect = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+
+  function invHover() {                 // -> {kind:'inv'|'equip', i|slot, item}
+    if (!invOpen) return null;
+    for (let i = 0; i < P.inv.length; i++) if (inRect(invRect(i), mouse.x, mouse.y)) return { kind: 'inv', i, item: P.inv[i] };
+    for (const s of ['weapon', 'armor']) if (P[s] && inRect(slotRect[s], mouse.x, mouse.y)) return { kind: 'equip', slot: s, item: P[s] };
+    return null;
+  }
+
+  function invClick(button) {           // returns true if the click was consumed by the panel
+    if (!invOpen || !inRect(PANEL, mouse.x, mouse.y)) return false;
+    const h = invHover();
+    if (!h) return true;
+    if (h.kind === 'inv') {
+      if (button === 2) { P.gold += h.item.value; addText(P.x, P.y - 20, '+' + h.item.value + ' gold', '#f5c518', 13); P.inv.splice(h.i, 1); }
+      else {
+        const it = h.item, old = P[it.slot];
+        P[it.slot] = it; P.inv.splice(h.i, 1);
+        if (old) P.inv.push(old);
+        recalc();
+      }
+    } else if (button !== 2 && P.inv.length < INV_SIZE) {
+      P.inv.push(h.item); P[h.slot] = null; recalc();
+    }
+    return true;
+  }
+
+  // ===================================================================
+  //  INPUT
+  // ===================================================================
+  function setMouse(ev) {
+    const r = cv.getBoundingClientRect();
+    mouse.x = (ev.clientX - r.left) * (W / r.width);
+    mouse.y = (ev.clientY - r.top) * (H / r.height);
+    mouse.wx = mouse.x + cam.x; mouse.wy = mouse.y + cam.y;
+  }
+  cv.addEventListener('contextmenu', ev => ev.preventDefault());
+  cv.addEventListener('mousemove', setMouse);
+  cv.addEventListener('mousedown', ev => {
+    setMouse(ev);
+    if (P.dead || paused) return;
+    if (invClick(ev.button)) return;
+    if (ev.button !== 0) return;
+    mouse.down = true; P.repathT = 0;
+    const e = enemyAt(mouse.wx, mouse.wy);
+    if (e) { mouse.mode = 'attack'; P.target = e; P.pickup = null; return; }
+    const g = groundAt(mouse.wx, mouse.wy);
+    if (g) { mouse.mode = 'pickup'; P.pickup = g; P.target = null; return; }
+    mouse.mode = 'move'; P.target = null; P.pickup = null;
+  });
+  window.addEventListener('mouseup', () => { mouse.down = false; });
+  window.addEventListener('blur', () => { mouse.down = false; });
+  window.addEventListener('keydown', ev => {
+    if (ev.repeat) return;
+    switch (ev.code) {
+      case 'Digit1': case 'Numpad1': castFireball(); break;
+      case 'Digit2': case 'Numpad2': castNova(); break;
+      case 'KeyQ': usePotion('hp'); break;
+      case 'KeyW': usePotion('mp'); break;
+      case 'KeyI': if (!P.dead) invOpen = !invOpen; break;
+      case 'Escape': invOpen = false; break;
+      case 'KeyP': if (!P.dead) paused = !paused; break;
+      case 'KeyR': if (P.dead) newRun(); break;
+    }
+  });
+  function resize() {
+    const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+    cv.style.width = Math.floor(W * s) + 'px';
+    cv.style.height = Math.floor(H * s) + 'px';
+  }
+  window.addEventListener('resize', resize);
+
+  // ===================================================================
+  //  RENDERING
+  // ===================================================================
+  function text(s, x, y, color, size, align) {
+    ctx.font = 'bold ' + (size || 14) + 'px monospace';
+    ctx.textAlign = align || 'left'; ctx.textBaseline = 'middle';
+    ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.strokeText(s, x, y);
+    ctx.fillStyle = color || '#fff'; ctx.fillText(s, x, y);
+  }
+  function box(x, y, w, h, fill, stroke) {
+    ctx.fillStyle = fill; ctx.fillRect(x, y, w, h);
+    if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.strokeRect(x + 1, y + 1, w - 2, h - 2); }
+  }
+
+  let vignette;
+  function makeVignette() {
+    vignette = ctx.createRadialGradient(W / 2, H / 2, 150, W / 2, H / 2, 560);
+    vignette.addColorStop(0, 'rgba(0,0,0,0)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.88)');
+  }
+
+  function drawWorld() {
+    const x0 = Math.max(0, Math.floor(cam.x / TS)), y0 = Math.max(0, Math.floor(cam.y / TS));
+    const x1 = Math.min(MW - 1, Math.floor((cam.x + W) / TS)), y1 = Math.min(MH - 1, Math.floor((cam.y + H) / TS));
+    const bossLocked = enemies.some(e => e.boss);
+    for (let j = y0; j <= y1; j++) for (let i = x0; i <= x1; i++) {
+      if (!explored[j * MW + i]) continue;
+      const t = map[j * MW + i], sx = i * TS - cam.x, sy = j * TS - cam.y;
+      if (t === 1) {
+        ctx.fillStyle = '#2a2d38'; ctx.fillRect(sx, sy, TS, TS);
+        ctx.fillStyle = '#3a3f50'; ctx.fillRect(sx, sy, TS, 6);
+        ctx.fillStyle = '#20222b'; ctx.fillRect(sx, sy + TS - 4, TS, 4);
+      } else {
+        const h = ((i * 73856093) ^ (j * 19349663)) & 7;
+        ctx.fillStyle = ((i + j) & 1) ? '#4a4238' : '#463f35';
+        ctx.fillRect(sx, sy, TS, TS);
+        if (h === 0) { ctx.fillStyle = 'rgba(0,0,0,0.12)'; ctx.fillRect(sx + 6, sy + 8, 10, 6); }
+        if (t === 2) {
+          ctx.fillStyle = bossLocked ? '#6b1f1f' : '#1d7a3c'; ctx.fillRect(sx + 2, sy + 2, TS - 4, TS - 4);
+          for (let k = 0; k < 4; k++) { ctx.fillStyle = bossLocked ? '#a03030' : '#33c26a'; ctx.fillRect(sx + 5 + k * 2, sy + 5 + k * 6, TS - 10 - k * 4, 4); }
+        }
+      }
+    }
+    // ground loot
+    for (const g of ground) {
+      const sx = g.x - cam.x, sy = g.y - cam.y + Math.sin(time * 3 + g.t) * 2;
+      if (sx < -40 || sx > W + 40 || sy < -40 || sy > H + 40) continue;
+      if (g.kind === 'gold') { box(sx - 5, sy - 5, 10, 10, '#f5c518', '#8a6d00'); }
+      else if (g.kind === 'hp') { box(sx - 6, sy - 7, 12, 14, '#d62c2c', '#ffffff'); }
+      else if (g.kind === 'mp') { box(sx - 6, sy - 7, 12, 14, '#2c5ad6', '#ffffff'); }
+      else {
+        const c = RARITY_COLOR[g.item.rar];
+        box(sx - 9, sy - 9, 18, 18, c, '#000');
+        ctx.fillStyle = 'rgba(255,255,255,0.4)'; ctx.fillRect(sx - 6, sy - 6, 12, 4);
+        if (g.item.rar > 0 || groundAt(mouse.wx, mouse.wy) === g) text(g.item.name, sx, sy - 18, c, 11, 'center');
+      }
+      if (g.kind !== 'item' && groundAt(mouse.wx, mouse.wy) === g) text(g.kind === 'gold' ? g.amount + ' gold' : g.kind === 'hp' ? 'Health potion' : 'Mana potion', sx, sy - 16, '#fff', 11, 'center');
+    }
+    // enemies
+    const hov = (!P.dead && !invOpen) ? enemyAt(mouse.wx, mouse.wy) : null;
+    for (const e of enemies) {
+      const sx = e.x - cam.x, sy = e.y - cam.y, s = e.T.sz;
+      if (sx < -60 || sx > W + 60 || sy < -60 || sy > H + 60) continue;
+      if (!explored[Math.floor(e.y / TS) * MW + Math.floor(e.x / TS)]) continue;
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(sx - s / 2, sy + s / 2 - 4, s, 6);
+      if (hov === e) { ctx.strokeStyle = '#ff4040'; ctx.lineWidth = 2; ctx.strokeRect(sx - s / 2 - 3, sy - s / 2 - 3, s + 6, s + 6); }
+      box(sx - s / 2, sy - s / 2, s, s, e.flash > 0 ? '#ffffff' : e.T.color, '#00000099');
+      ctx.fillStyle = '#ffe14d'; ctx.fillRect(sx - s / 4, sy - s / 6, 3, 3); ctx.fillRect(sx + s / 4 - 3, sy - s / 6, 3, 3);   // eyes
+      if (e.type === 'archer') { ctx.fillStyle = '#c9a36b'; ctx.fillRect(sx + s / 2, sy - s / 2, 3, s); }
+      if (e.type === 'brute') { ctx.fillStyle = '#5b2a73'; ctx.fillRect(sx - s / 2, sy + s / 6, s, 4); }
+      if (e.boss) { ctx.fillStyle = '#ffd93b'; for (let k = 0; k < 3; k++) ctx.fillRect(sx - s / 2 + 4 + k * 14, sy - s / 2 - 8, 8, 8); }
+      if (e.hp < e.maxhp || hov === e) {
+        const bw = Math.max(26, s);
+        ctx.fillStyle = '#000'; ctx.fillRect(sx - bw / 2 - 1, sy - s / 2 - (e.boss ? 18 : 10) - 1, bw + 2, 6);
+        ctx.fillStyle = '#d02020'; ctx.fillRect(sx - bw / 2, sy - s / 2 - (e.boss ? 18 : 10), bw * Math.max(0, e.hp / e.maxhp), 4);
+      }
+    }
+    // player
+    {
+      const sx = P.x - cam.x, sy = P.y - cam.y, s = 20;
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(sx - s / 2, sy + s / 2 - 4, s, 6);
+      box(sx - s / 2, sy - s / 2, s, s, P.flash > 0 ? '#ff9a9a' : P.armor ? RARITY_COLOR[P.armor.rar] === '#e8e8e8' ? '#8a9bb0' : RARITY_COLOR[P.armor.rar] : '#3b82c4', '#10253d');
+      ctx.fillStyle = '#f2d6b0'; ctx.fillRect(sx - 5 + Math.cos(P.face) * 5, sy - 5 + Math.sin(P.face) * 5, 10, 10);
+      if (P.weapon) {                                          // weapon
+        const a = P.face + (P.swing > 0 ? (P.swing / 0.15 - 0.5) * 1.6 : 0);
+        ctx.strokeStyle = RARITY_COLOR[P.weapon.rar]; ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.moveTo(sx + Math.cos(a) * 8, sy + Math.sin(a) * 8); ctx.lineTo(sx + Math.cos(a) * 24, sy + Math.sin(a) * 24); ctx.stroke();
+      }
+    }
+    // projectiles
+    for (const p of projectiles) {
+      const sx = p.x - cam.x, sy = p.y - cam.y;
+      box(sx - p.r, sy - p.r, p.r * 2, p.r * 2, p.color, p.friendly ? '#ffe08a' : '#7a1500');
+    }
+    // effects
+    for (const f of effects) {
+      const k = f.t / f.dur, sx = f.x - cam.x, sy = f.y - cam.y;
+      if (f.type === 'ring') {
+        const r = f.r0 + (f.r1 - f.r0) * k;
+        ctx.strokeStyle = 'rgba(' + f.color + ',' + (1 - k) + ')'; ctx.lineWidth = 6 * (1 - k) + 2;
+        ctx.strokeRect(sx - r, sy - r, r * 2, r * 2);                 // "box" ring
+        ctx.fillStyle = 'rgba(' + f.color + ',' + 0.18 * (1 - k) + ')'; ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+      } else if (f.type === 'slash') {
+        ctx.strokeStyle = 'rgba(255,255,255,' + (1 - k) + ')'; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(sx, sy, 30, f.a - 0.9, f.a + 0.9); ctx.stroke();
+      }
+    }
+    // floating texts
+    for (const t of texts) {
+      ctx.globalAlpha = clamp(2 * (1 - t.t / t.dur), 0, 1);
+      text(t.s, t.x - cam.x, t.y - cam.y, t.color, t.size, 'center');
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawOrb(cx, cy, r, frac, c1, c2, label) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = '#120808'; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+    const h = r * 2 * clamp(frac, 0, 1);
+    const gr = ctx.createLinearGradient(0, cy + r - h, 0, cy + r); gr.addColorStop(0, c1); gr.addColorStop(1, c2);
+    ctx.fillStyle = gr; ctx.fillRect(cx - r, cy + r - h, r * 2, h);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(cx - r * 0.6, cy - r * 0.8, r * 0.5, r * 0.6);
+    ctx.restore();
+    ctx.strokeStyle = '#8a7a55'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    text(label, cx, cy, '#fff', 13, 'center');
+  }
+
+  function drawItemIcon(it, x, y, w, h) {
+    const c = RARITY_COLOR[it.rar];
+    box(x + 8, y + 8, w - 16, h - 16, '#1a1a22', c);
+    ctx.fillStyle = c;
+    if (it.slot === 'weapon') { ctx.fillRect(x + w / 2 - 3, y + 12, 6, h - 30); ctx.fillRect(x + w / 2 - 10, y + h - 22, 20, 5); }
+    else { ctx.fillRect(x + 14, y + 14, w - 28, h - 28); ctx.fillStyle = '#00000055'; ctx.fillRect(x + w / 2 - 3, y + 14, 6, h - 28); }
+  }
+
+  function itemLines(it) {
+    const l = [];
+    if (it.dmg) l.push('+' + it.dmg + ' Damage');
+    if (it.armor) l.push('+' + it.armor + ' Armor');
+    if (it.hp) l.push('+' + it.hp + ' Max HP');
+    return l;
+  }
+
+  function drawTooltip(it, hint) {
+    const lines = itemLines(it);
+    const rows = [[it.name, RARITY_COLOR[it.rar]], [RARITY_NAME[it.rar] + ' ' + (it.slot === 'weapon' ? 'Weapon' : 'Armor'), '#999']]
+      .concat(lines.map(s => [s, '#9fe39f'])).concat([[hint, '#888']]);
+    ctx.font = 'bold 13px monospace';
+    let w = 0; for (const r of rows) w = Math.max(w, ctx.measureText(r[0]).width);
+    w += 20; const h = rows.length * 20 + 10;
+    let x = mouse.x + 16, y = mouse.y + 12;
+    if (x + w > W) x = mouse.x - w - 8; if (y + h > H) y = H - h - 4;
+    box(x, y, w, h, 'rgba(10,10,16,0.95)', RARITY_COLOR[it.rar]);
+    rows.forEach((r, i) => text(r[0], x + 10, y + 16 + i * 20, r[1], 13));
+  }
+
+  function drawInventory() {
+    box(PANEL.x, PANEL.y, PANEL.w, PANEL.h, 'rgba(18,16,24,0.95)', '#8a7a55');
+    text('INVENTORY', PANEL.x + PANEL.w / 2, PANEL.y + 24, '#e8d9a8', 18, 'center');
+    text('Weapon', PANEL.x + 62, PANEL.y + 66, '#aaa', 12, 'center');
+    text('Armor', PANEL.x + 62, PANEL.y + 176, '#aaa', 12, 'center');
+    for (const s of ['weapon', 'armor']) {
+      const r = slotRect[s];
+      box(r.x, r.y, r.w, r.h, '#0d0d12', '#555');
+      if (P[s]) drawItemIcon(P[s], r.x, r.y, r.w, r.h);
+    }
+    text('Damage  ' + baseDmg(), PANEL.x + 20, PANEL.y + 290, '#ffd0a0', 13);
+    text('Armor   ' + armorVal(), PANEL.x + 20, PANEL.y + 312, '#a0c8ff', 13);
+    text('Max HP  ' + P.maxhp, PANEL.x + 20, PANEL.y + 334, '#ff9a9a', 13);
+    text('Gold    ' + P.gold, PANEL.x + 20, PANEL.y + 356, '#f5c518', 13);
+    for (let i = 0; i < INV_SIZE; i++) {
+      const r = invRect(i);
+      box(r.x, r.y, r.w, r.h, '#0d0d12', '#444');
+      if (P.inv[i]) drawItemIcon(P.inv[i], r.x, r.y, r.w, r.h);
+    }
+    text('Click: equip   Right-click: sell   I: close', PANEL.x + PANEL.w / 2, PANEL.y + PANEL.h - 16, '#888', 12, 'center');
+    const h = invHover();
+    if (h) drawTooltip(h.item, h.kind === 'inv' ? 'Click equip / Right-click sell ' + h.item.value + 'g' : 'Click to unequip');
+  }
+
+  function drawHUD() {
+    // top-left stats
+    box(10, 10, 250, 92, 'rgba(0,0,0,0.55)', '#5a4d33');
+    text('Level ' + P.level, 20, 26, '#ffe14d', 16);
+    const need = xpNeed(P.level);
+    box(20, 40, 230, 10, '#222'); ctx.fillStyle = '#8f5bd6'; ctx.fillRect(20, 40, 230 * P.xp / need, 10);
+    text('XP ' + P.xp + '/' + need, 135, 45, '#fff', 10, 'center');
+    text('Gold ' + P.gold, 20, 64, '#f5c518', 14);
+    text('Depth ' + depth + '  (best ' + bestDepth + ')', 20, 84, '#cfd8ff', 14);
+    const left = enemies.length;
+    text(left ? 'Enemies: ' + left : 'Level cleared!', 150, 64, left ? '#ff9a9a' : '#7dff9a', 13);
+
+    // minimap
+    if (mmDirty) {
+      const m = mmCanvas.getContext('2d'); m.clearRect(0, 0, MW * 2, MH * 2);
+      for (let j = 0; j < MH; j++) for (let i = 0; i < MW; i++) {
+        if (!explored[j * MW + i]) continue;
+        const t = map[j * MW + i];
+        m.fillStyle = t === 1 ? '#222633' : t === 2 ? '#33c26a' : '#6a6458';
+        m.fillRect(i * 2, j * 2, 2, 2);
+      }
+      mmDirty = false;
+    }
+    box(W - 142, 8, MW * 2 + 12, MH * 2 + 12, 'rgba(0,0,0,0.6)', '#5a4d33');
+    ctx.drawImage(mmCanvas, W - 136, 14);
+    ctx.fillStyle = '#ff4040';
+    for (const e of enemies) if (dist(e.x, e.y, P.x, P.y) < 12 * TS) ctx.fillRect(W - 136 + (e.x / TS) * 2 - 1, 14 + (e.y / TS) * 2 - 1, 3, 3);
+    ctx.fillStyle = '#fff'; ctx.fillRect(W - 136 + (P.x / TS) * 2 - 1, 14 + (P.y / TS) * 2 - 1, 3, 3);
+
+    // boss bar
+    const boss = enemies.find(e => e.boss && e.aggro);
+    if (boss) {
+      box(W / 2 - 200, 20, 400, 16, '#000', '#6b1f1f');
+      ctx.fillStyle = '#c0204a'; ctx.fillRect(W / 2 - 198, 22, 396 * Math.max(0, boss.hp / boss.maxhp), 12);
+      text(boss.T.name, W / 2, 50, '#ffb0c0', 13, 'center');
+    }
+
+    // orbs
+    drawOrb(90, H - 70, 56, P.hp / P.maxhp, '#ff4a4a', '#6a0808', Math.ceil(P.hp) + '/' + P.maxhp);
+    drawOrb(W - 90, H - 70, 56, P.mp / P.maxmp, '#4a8aff', '#08206a', Math.floor(P.mp) + '/' + P.maxmp);
+
+    // hotbar
+    const slots = [
+      { key: '1', name: 'Fireball', col: '#ff8a1e', cd: P.cd[0], max: 0.35, cost: 8 },
+      { key: '2', name: 'Nova', col: '#6ec0ff', cd: P.cd[1], max: 2.5, cost: 25 },
+      { key: 'Q', name: 'HP', col: '#d62c2c', cd: P.potCd, max: 0.8, count: P.potions.hp },
+      { key: 'W', name: 'MP', col: '#2c5ad6', cd: P.potCd, max: 0.8, count: P.potions.mp }
+    ];
+    const bx = (W - (4 * 60 + 3 * 8)) / 2, by = H - 76;
+    slots.forEach((s, i) => {
+      const x = bx + i * 68;
+      box(x, by, 60, 60, '#0d0d12', '#8a7a55');
+      ctx.fillStyle = s.col; ctx.fillRect(x + 14, by + 10, 32, 32);
+      ctx.strokeStyle = '#00000088'; ctx.lineWidth = 2; ctx.strokeRect(x + 14, by + 10, 32, 32);
+      if (s.count !== undefined) text('x' + s.count, x + 30, by + 28, '#fff', 14, 'center');
+      const noMana = s.cost && P.mp < s.cost, noPot = s.count === 0;
+      if (noMana || noPot) { ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x + 2, by + 2, 56, 56); }
+      if (s.cd > 0) { ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(x + 2, by + 2, 56, 56 * Math.min(1, s.cd / s.max)); }
+      text(s.key, x + 8, by + 8, '#ffe14d', 12, 'center');
+      text(s.name, x + 30, by + 52, '#ddd', 10, 'center');
+    });
+
+    // messages
+    messages.forEach((m, i) => { ctx.globalAlpha = clamp(4 - m.t, 0, 1); text(m.s, W / 2, 80 + i * 20, '#ffe9a8', 15, 'center'); });
+    ctx.globalAlpha = 1;
+    if (hintT > 0) {
+      ctx.globalAlpha = Math.min(1, hintT);
+      text('LMB move/attack (hold to walk) | 1 Fireball | 2 Nova | Q Health | W Mana | I Inventory | P Pause', W / 2, H - 100, '#ddd', 13, 'center');
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function render() {
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    drawWorld();
+    ctx.fillStyle = vignette; ctx.fillRect(0, 0, W, H);
+    if (P.flash > 0) { ctx.fillStyle = 'rgba(255,0,0,' + (P.flash * 1.2) + ')'; ctx.fillRect(0, 0, W, H); }
+    drawHUD();
+    if (invOpen) drawInventory();
+    if (paused) { ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H); text('PAUSED (P)', W / 2, H / 2, '#fff', 36, 'center'); }
+    if (P.dead) {
+      ctx.fillStyle = 'rgba(40,0,0,0.75)'; ctx.fillRect(0, 0, W, H);
+      text('YOU DIED', W / 2, H / 2 - 70, '#e03030', 64, 'center');
+      text('Depth ' + depth + '   Level ' + P.level + '   Kills ' + kills + '   Gold ' + P.gold, W / 2, H / 2, '#ddd', 20, 'center');
+      text('Best depth: ' + bestDepth, W / 2, H / 2 + 34, '#f5c518', 18, 'center');
+      text('Press R to restart', W / 2, H / 2 + 80, '#fff', 26, 'center');
+    }
+    text('seed ' + seed, W - 8, H - 8, 'rgba(255,255,255,0.35)', 10, 'right');
+  }
+
+  // ===================================================================
+  //  MAIN LOOP (fixed timestep)
+  // ===================================================================
+  let last = 0, acc = 0;
+  function frame(now) {
+    acc += Math.min(0.25, (now - last) / 1000); last = now;
+    while (acc >= DT) { update(DT); acc -= DT; }
+    render();
+    requestAnimationFrame(frame);
+  }
+
+  mmCanvas = document.createElement('canvas'); mmCanvas.width = MW * 2; mmCanvas.height = MH * 2;
+  makeVignette(); resize();
+  newRun();
+  update(0);
+  requestAnimationFrame(t => { last = t; frame(t); });
+
+  // test/debug hook (harmless)
+  window.__game = { update, render, get state() { return { P, enemies, ground, depth, map, rooms, stairs, mouse, newRun, buildLevel, genItem, findPath }; } };
+})();
+</script>
+</body>
+</html>
