@@ -7,6 +7,11 @@ Mouse/keyboard and touch are supported.
 - Click/tap to move, attack and pick up. Tap an NPC to walk to it and talk (or press **E** next to one).
 - Auto-attack is class flavored. Skill slots: **1-4** or the big round buttons. **Q / W** potions, **G** Town Portal scroll (or the cyan *Portal* button), **I** bag, **T** skill tree, **P** pause, **Esc** closes panels.
 
+## HUD
+Touch/narrow layout: two mirrored 2x2 button blocks in the bottom corners (skill slots right; Bag / Skills / Portal / Pause left). The health orb sits above the
+menu block and the mana orb above the skill block, and the orbs are the potion buttons (tap = drink, badge = potion count; **Q / W** on keyboard).
+The center of the screen stays free. Wide non-touch windows put the orbs bottom-center instead. Geometry lives in `layoutHUD()` (`js/layout.js`); hit-testing uses the same `HUD.buttons` list that is drawn.
+
 ## World
 Haven (town 1) -> Old Crypt (dungeon, 3 floors, boss) / Ember Caverns (dungeon, unlocked by the Crypt boss) / King's Road (unlocked by beating either) -> Fenwick (town 2) -> Frostbound Mines.
 Towns have a Merchant (buy/sell; stock refreshes on every visit and improves with your best depth), a Healer (free heal) and, in Haven, a Trainer (respec for gold).

@@ -2,7 +2,7 @@
 // HUD, inventory panel drawing, tooltips and the top-level render().
 // Plain script (no modules): shares globals with the other files in js/.
 
-function drawOrb(cx, cy, r, frac, c1, c2, label) {
+function drawOrb(cx, cy, r, frac, c1, c2, label, labelDy) {
   ctx.save();
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
   ctx.fillStyle = '#120808'; ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
@@ -12,7 +12,24 @@ function drawOrb(cx, cy, r, frac, c1, c2, label) {
   ctx.fillStyle = 'rgba(255,255,255,0.12)'; ctx.fillRect(cx - r * 0.6, cy - r * 0.8, r * 0.5, r * 0.6);
   ctx.restore();
   ctx.strokeStyle = '#8a7a55'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-  text(label, cx, cy, '#fff', 13, 'center');
+  text(label, cx, cy + (labelDy || 0), '#fff', 13, 'center');
+}
+
+function drawPotionOrb(b) {
+  const hp = b.id === 'hp', n = P.potions[b.id], x = b.x, y = b.y, r = b.r, down = time < b.pressT;
+  const label = hp ? Math.ceil(P.hp) + '/' + P.maxhp : Math.floor(P.mp) + '/' + P.maxmp;
+  drawOrb(x, y, r, hp ? P.hp / P.maxhp : P.mp / P.maxmp, hp ? '#ff4a4a' : '#4a8aff', hp ? '#6a0808' : '#08206a', label, r * 0.3);
+  if (P.potCd > 0) {                              // potion cooldown: dark sweep draining downwards
+    ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+    ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(x - r, y - r, r * 2, r * 2 * Math.min(1, P.potCd / 0.8)); ctx.restore();
+  }
+  if (down) { ctx.strokeStyle = '#fff'; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke(); }
+  const bx = x + r * 0.72, by = y - r * 0.72, br = Math.max(12, r * 0.27);   // potion count badge
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = n ? (hp ? '#ff7a7a' : '#7aa8ff') : '#8a7a55'; ctx.lineWidth = 2; ctx.stroke();
+  text(String(n), bx, by, n ? '#fff' : '#f66', Math.round(br * 1.1), 'center');
+  text(hp ? 'HP' : 'MP', x, y - r * 0.38, 'rgba(255,255,255,0.75)', Math.round(r * 0.28), 'center');
+  if (!touchDevice) text(b.key, x - r * 0.72, y - r * 0.72, '#ffe14d', 12, 'center');
 }
 
 function drawItemIcon(it, x, y, w, h) {
@@ -79,6 +96,7 @@ function drawInventory() {
 }
 
 function drawButton(b) {
+  if (b.orb) { drawPotionOrb(b); return; }
   let cd = 0, max = 1, count, disabled = false, label = b.label, col = b.col, key = b.key, badge = 0, empty = false;
   if (b.id.startsWith('slot')) {                 // skill-bar slot: shows whichever skill is equipped there
     const id = P.slots[+b.id.slice(4)];
@@ -88,8 +106,6 @@ function drawButton(b) {
       label = def.short; col = def.color; cd = P.cds[id] || 0; max = cdOf(def, r); disabled = P.mp < manaCost(def, r);
     }
   }
-  else if (b.id === 'hp') { cd = P.potCd; max = 0.8; count = P.potions.hp; disabled = count === 0; }
-  else if (b.id === 'mp') { cd = P.potCd; max = 0.8; count = P.potions.mp; disabled = count === 0; }
   else if (b.id === 'skills') badge = P.skillPoints;
   else if (b.id === 'tp') { count = P.scrolls; cd = P.tpT; max = TP_CHANNEL; disabled = count === 0 || isTown(); }
   const x = b.x, y = b.y, r = b.r, down = time < b.pressT;
@@ -166,25 +182,20 @@ function drawHUD() {
   messages.forEach((m, i) => { ctx.globalAlpha = clamp(4 - m.t, 0, 1); text(m.s, W / 2, y + 8 + i * (ms + 6), '#ffe9a8', ms, 'center'); });
   ctx.globalAlpha = 1;
 
-  // orbs
-  const [o1, o2] = HUD.orbs;
-  drawOrb(o1.x, o1.y, HUD.R, P.hp / P.maxhp, '#ff4a4a', '#6a0808', Math.ceil(P.hp) + '/' + P.maxhp);
-  drawOrb(o2.x, o2.y, HUD.R, P.mp / P.maxmp, '#4a8aff', '#08206a', Math.floor(P.mp) + '/' + P.maxmp);
-
-  // on-screen buttons
+  // on-screen buttons (the health / mana orbs are buttons too: tap = drink a potion)
   for (const b of HUD.buttons) drawButton(b);
 
   if (hintT > 0 && !paused) {
     ctx.globalAlpha = Math.min(1, hintT);
     const hs = Math.round(13 * Math.min(HUD.s, 1.2));
     const segs = touchDevice
-      ? ['Tap to move (hold to keep walking)', 'tap an NPC to talk', 'you auto-attack when close', 'buttons: skills & potions']
+      ? ['Tap to move (hold to keep walking)', 'tap an NPC to talk', 'you auto-attack when close', 'tap the red / blue orbs to drink potions']
       : ['Click to move (hold to walk)', 'click an NPC to talk (or E)', 'auto-attacks when close', '1-4 Skills', 'T Skill tree', 'G Town portal', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
     ctx.font = 'bold ' + hs + 'px monospace';
     const lines = []; let cur = '';
     for (const sg of segs) {                       // greedy word-wrap of the hint segments to the screen width
       const t = cur ? cur + ' | ' + sg : sg;
-      if (cur && ctx.measureText(t).width > W - 24) { lines.push(cur); cur = sg; } else cur = t;
+      if (cur && ctx.measureText(t).width > HUD.hintW) { lines.push(cur); cur = sg; } else cur = t;
     }
     lines.push(cur);
     lines.forEach((l, i) => text(l, W / 2, HUD.hudTop - 6 - (lines.length - 1 - i) * (hs + 6), '#ddd', hs, 'center'));

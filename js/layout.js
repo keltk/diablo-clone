@@ -21,38 +21,47 @@ function resize() {
 }
 
 function layoutHUD() {
+  // Compact HUD. Two mirrored 2x2 button blocks sit in the bottom corners: skill slots on the right, menu buttons
+  // (Bag / Skills / Portal / Pause) on the left. The health / mana orbs double as potion buttons: touch and narrow
+  // layouts stack them on top of their block (center of the screen stays clear); wide desktop windows put them bottom-center.
   const s = Math.max(1, 0.95 / VZ);                  // text/panel scale so the HUD stays readable on small screens
-  const B = Math.round(Math.max(64, 60 / VZ));       // big button diameter => >= ~60 CSS px (thumb friendly)
-  const R = Math.round(B * 0.6);                     // orb radius
-  const m = 14, gap = 10, sb = Math.round(B * 0.72); // margin, gap, small-button diameter
-  HUD.s = s; HUD.B = B; HUD.R = R;
+  const m = 12, gap = 8;
+  HUD.s = s;
   HUD.statsS = Math.min(s, (W - 142 - 24) / 250);
-  const by = H - m - B / 2, by2 = by - B - gap;
-  const btn = (id, x, y, r, label, col, key) => ({ id, x, y, r, label, col, key, pressT: 0 });
-  const rx = W - m - B / 2, rx2 = W - m - B - gap - B / 2;
-  const bs = [                                   // skill bar: 2x2 block bottom-right (slot 1 = thumb corner)
-    btn('slot0', rx, by, B / 2, '', '#444', '1'), btn('slot1', rx2, by, B / 2, '', '#444', '2'),
-    btn('slot2', rx, by2, B / 2, '', '#444', '3'), btn('slot3', rx2, by2, B / 2, '', '#444', '4'),
-    btn('hp', m + B / 2, by, B / 2, 'HP', '#d62c2c', 'Q'),
-    btn('mp', m + B + gap + B / 2, by, B / 2, 'MP', '#2c5ad6', 'W')
-  ];
-  let leftTop = H - m - B, rightTop = H - m - 2 * B - gap;
-  const wide = W >= 4 * B + 4 * R + 2 * m + 4 * gap + 40;
-  if (wide) {               // orbs sit between the two button clusters
-    HUD.orbs = [{ x: W / 2 - R - 8, y: H - m - R }, { x: W / 2 + R + 8, y: H - m - R }];
-  } else {                  // narrow screens: orbs stack above the button clusters
-    leftTop -= gap + 2 * R; rightTop -= gap + 2 * R;
-    HUD.orbs = [{ x: m + R, y: leftTop + R }, { x: W - m - R, y: rightTop + R }];
-  }
-  const sy = leftTop - gap - sb / 2;              // small menu buttons: Pause / Bag / Skills in a row above the left cluster
-  bs.push(btn('pause', m + sb / 2, sy, sb / 2, 'Pause', '#8a8f9c', 'P'));
-  bs.push(btn('inv', m + sb * 1.5 + gap, sy, sb / 2, 'Bag', '#d6b04a', 'I'));
-  bs.push(btn('skills', m + sb * 2.5 + 2 * gap, sy, sb / 2, 'Skills', '#b078ff', 'T'));
-  bs.push(btn('tp', m + sb * 3.5 + 3 * gap, sy, sb / 2, 'Portal', '#3ac8d8', 'G'));
-  HUD.buttons = bs;
-  HUD.hudTop = Math.min(leftTop - gap - sb, rightTop) - gap;
   HUD.mapBottom = 8 + (MH * 2 + 12);
   HUD.topZone = Math.max(10 + 92 * HUD.statsS, HUD.mapBottom) + 8;   // y below the stats panel / minimap
+  let B = Math.round(Math.max(54, 52 / VZ));         // button diameter => >= ~52 CSS px, plus a 6px hit margin (see buttonAt)
+  const orbK = 0.78;                                 // orb radius / B  (orb diameter stays inside the 2-button block width)
+  const wide = !touchDevice && W > H && W >= 4 * B + 4 * Math.round(B * orbK) + 2 * m + 5 * gap + 40;
+  if (!wide) B = Math.max(46, Math.min(B, Math.floor((H - m - HUD.topZone - 3 * gap) / (2 + 2 * orbK))));   // short screens: shrink so the stacks clear the stats/minimap
+  const R = Math.round(B * orbK);
+  HUD.B = B; HUD.R = R;
+  const btn = (id, x, y, r, label, col, key, extra) => Object.assign({ id, x, y, r, label, col, key, pressT: 0 }, extra);
+  const by = H - m - B / 2, by2 = by - B - gap;                       // bottom / top row centers
+  const rx = W - m - B / 2, rx2 = rx - B - gap;                       // right column centers (slot 1 = thumb corner)
+  const lx = m + B / 2, lx2 = lx + B + gap;                           // left column centers (mirror image)
+  const bs = [
+    btn('slot0', rx, by, B / 2, '', '#444', '1'), btn('slot1', rx2, by, B / 2, '', '#444', '2'),
+    btn('slot2', rx, by2, B / 2, '', '#444', '3'), btn('slot3', rx2, by2, B / 2, '', '#444', '4'),
+    btn('inv', lx, by, B / 2, 'Bag', '#d6b04a', 'I'), btn('skills', lx2, by, B / 2, 'Skills', '#b078ff', 'T'),
+    btn('tp', lx, by2, B / 2, 'Portal', '#3ac8d8', 'G'), btn('pause', lx2, by2, B / 2, 'Pause', '#8a8f9c', 'P')
+  ];
+  let top = by2 - B / 2;                                              // top edge of the button blocks
+  let hpO, mpO;
+  if (wide) {               // orbs between the two blocks, bottom-center
+    hpO = { x: W / 2 - R - 8, y: H - m - R }; mpO = { x: W / 2 + R + 8, y: H - m - R };
+  } else {                  // orbs sit on top of their block: health above the menu buttons, mana above the skill slots
+    const oy = top - gap - R;
+    hpO = { x: m + B + gap / 2, y: oy }; mpO = { x: W - m - B - gap / 2, y: oy };
+    top = oy - R;
+  }
+  bs.push(btn('hp', hpO.x, hpO.y, R, 'HP', '#d62c2c', 'Q', { orb: true }));
+  bs.push(btn('mp', mpO.x, mpO.y, R, 'MP', '#2c5ad6', 'W', { orb: true }));
+  HUD.orbs = [hpO, mpO];
+  HUD.buttons = bs;
+  const free = W - 2 * (m + 2 * B + gap) - 2 * gap;                    // free width between the two blocks
+  if (!wide && free >= 340) { HUD.hudTop = H - m; HUD.hintW = free; }   // roomy (landscape): hints tuck into the bottom-center gap
+  else { HUD.hudTop = top - gap; HUD.hintW = W - 24; }                  // otherwise above the blocks
 
   // inventory panel (local 540 x 500, scaled so slots are >= ~50 CSS px, but always fully on screen)
   let ps = clamp(52 / (68 * VZ), 1, 1.5);
