@@ -4,6 +4,7 @@
 // To add a new NPC kind: add it to NPC_TYPES (world.js) and a case in drawNpcPanel() / npcPanelPress() below.
 
 const POTION_PRICE = 25;
+const SCROLL_PRICE = 75, MAX_SCROLLS = 20;
 const respecCost = () => 40 + 15 * P.level;
 const buyPrice = it => Math.max(15, Math.round(it.value * 3));
 
@@ -53,7 +54,7 @@ function nearestNpc(maxD) {
 const NP = {
   tabBuy: { x: 20, y: 46, w: 120, h: 38 }, tabSell: { x: 148, y: 46, w: 120, h: 38 },
   grid: i => ({ x: 20 + (i % 4) * 78, y: 92 + Math.floor(i / 4) * 78, w: 68, h: 68 }),
-  potHp: { x: 350, y: 92, w: 170, h: 74 }, potMp: { x: 350, y: 174, w: 170, h: 74 }, junk: { x: 350, y: 92, w: 170, h: 74 },
+  potHp: { x: 350, y: 92, w: 170, h: 74 }, potMp: { x: 350, y: 174, w: 170, h: 74 }, junk: { x: 350, y: 92, w: 170, h: 74 }, scroll: { x: 350, y: 256, w: 170, h: 74 },
   action: { x: 320, y: 432, w: 200, h: 52 },
   big: { x: 70, y: 330, w: 400, h: 80 }
 };
@@ -71,6 +72,7 @@ function npcPress(x, y) {                                   // tap inside the pa
     if (o.tab === 'buy') {
       if (inRect(NP.potHp, p.x, p.y)) buyPotion('hp');
       else if (inRect(NP.potMp, p.x, p.y)) buyPotion('mp');
+      else if (inRect(NP.scroll, p.x, p.y)) buyScroll();
     } else if (inRect(NP.junk, p.x, p.y)) {
       const j = junkItems(), g = j.reduce((a, it) => a + it.value, 0);
       if (j.length) { P.inv = P.inv.filter(it => it.rar !== 0); P.gold += g; o.sel = null; msg('Sold ' + j.length + ' common item' + (j.length > 1 ? 's' : '') + ' for ' + g + ' gold'); }
@@ -103,6 +105,11 @@ function buyPotion(kind) {
   if (P.gold < POTION_PRICE) { msg('Not enough gold'); return; }
   if (P.potions[kind] >= 99) { msg('You cannot carry more'); return; }
   P.gold -= POTION_PRICE; P.potions[kind]++;
+}
+function buyScroll() {
+  if (P.gold < SCROLL_PRICE) { msg('Not enough gold'); return; }
+  if (P.scrolls >= MAX_SCROLLS) { msg('You cannot carry more scrolls'); return; }
+  P.gold -= SCROLL_PRICE; P.scrolls++;
 }
 function buyItem(it) {
   const price = buyPrice(it);
@@ -162,9 +169,14 @@ function drawNpcPanel() {
         text('Buy  ' + POTION_PRICE + 'g', r.x + r.w / 2, r.y + 41, ok ? '#ffe27a' : '#777', 14, 'center');
         text('You have ' + P.potions[kind], r.x + r.w / 2, r.y + 60, '#bbb', 11, 'center');
       }
-      text('Stock changes each visit', 350, 270, '#777', 11);
-      text('Better gear the deeper', 350, 286, '#777', 11);
-      text('you have been.', 350, 302, '#777', 11);
+      const sok = P.gold >= SCROLL_PRICE && P.scrolls < MAX_SCROLLS;
+      box(NP.scroll.x, NP.scroll.y, NP.scroll.w, NP.scroll.h, sok ? '#1f6a7a' : '#2a2a30', '#000');
+      text('Town Portal scroll', NP.scroll.x + 85, NP.scroll.y + 20, sok ? '#fff' : '#888', 13, 'center');
+      text('Buy  ' + SCROLL_PRICE + 'g', NP.scroll.x + 85, NP.scroll.y + 41, sok ? '#ffe27a' : '#777', 14, 'center');
+      text('You have ' + P.scrolls, NP.scroll.x + 85, NP.scroll.y + 60, '#bbb', 11, 'center');
+      text('Stock changes each visit.', 350, 350, '#777', 11);
+      text('Better gear the deeper', 350, 366, '#777', 11);
+      text('you have been.', 350, 382, '#777', 11);
     } else {
       const j = junkItems(), g = j.reduce((a, it) => a + it.value, 0);
       btnBox(NP.junk, j.length ? 'Sell ' + j.length + ' common  ' + g + 'g' : 'No common items', '#7a6420', j.length > 0);

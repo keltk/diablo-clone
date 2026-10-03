@@ -6,8 +6,8 @@
 // player position, explored-map bits and best depth. Enemies/loot on the floor are NOT stored (the floor is rebuilt).
 
 const SAVE_KEY = 'tinydiablo_save';
-const SAVE_VERSION = 3;         // v3 adds the world (zone, unlocks). v1/v2 saves still load: they land in town 1 with their progress
-const OLD_SAVE_VERSIONS = [1, 2];
+const SAVE_VERSION = 4;         // v3 adds the world (zone, unlocks), v4 adds portal scrolls. Older saves still load: they land in town 1 with their progress
+const OLD_SAVE_VERSIONS = [1, 2, 3];
 
 let autosaveOK = true;      // false after a fresh run started while a save exists, until the player saves manually
 let titleOpen = false;      // start screen (Continue / New Game)
@@ -41,13 +41,14 @@ function parseSave(raw) {                 // -> clean save object, or null if mi
   if (!o || typeof o !== 'object' || (o.v !== SAVE_VERSION && !OLD_SAVE_VERSIONS.includes(o.v))) return null;
   const p = o.player;
   if (!p || typeof p !== 'object') return null;
-  if (!isInt(o.seed, 0, 4294967295) || !isInt(o.depth, 1, 9999) || !isNum(o.savedAt, 0, 1e15)) return null;
+  if (!isInt(o.seed, 0, 4294967295) || !isInt(o.depth, 0, 9999) || !isNum(o.savedAt, 0, 1e15)) return null;
   if (!isInt(p.level, 1, 999) || !isNum(p.xp, 0, 1e9) || !isNum(p.hp, 0, 1e6) || !isNum(p.mp, 0, 1e6)) return null;
   if (!isInt(p.gold, 0, 1e9) || !p.potions || !isInt(p.potions.hp, 0, 999) || !isInt(p.potions.mp, 0, 999)) return null;
   if (!Array.isArray(p.inv) || p.inv.length > INV_SIZE) return null;
   const inv = p.inv.map(it => cleanItem(it)); if (inv.some(x => !x)) return null;
   const weapon = p.weapon == null ? null : cleanItem(p.weapon, 'weapon'); if (p.weapon != null && !weapon) return null;
   const armor = p.armor == null ? null : cleanItem(p.armor, 'armor'); if (p.armor != null && !armor) return null;
+  const scrolls = o.v >= 4 && isInt(p.scrolls, 0, 99) ? p.scrolls : 0;      // older saves: none
   const pos = isNum(p.x, 0, MW * TS) && isNum(p.y, 0, MH * TS) ? { x: p.x, y: p.y } : null;   // position is optional
   const exp = typeof o.explored === 'string' && o.explored.length === MW * MH / 4 && /^[0-9a-f]+$/.test(o.explored) ? o.explored : null;
   // class + skills (v2). v1 saves default to a Warrior with the starter skill and all other points unspent.
@@ -70,7 +71,7 @@ function parseSave(raw) {                 // -> clean save object, or null if mi
   // world (v3). Older saves start in the first town; clearing the old depth-3 boss counts as beating Dungeon 1.
   let wd;
   if (o.v < 3) {
-    wd = { zone: START_ZONE, floor: 1, town: START_ZONE, cleared: o.depth >= 4 ? { dun1: true } : {}, bestFloor: o.depth > 1 ? { dun1: Math.min(3, o.depth) } : {} };
+    wd = { zone: START_ZONE, floor: 1, town: START_ZONE, portal: null, cleared: o.depth >= 4 ? { dun1: true } : {}, bestFloor: o.depth > 1 ? { dun1: Math.min(3, o.depth) } : {} };
   } else {
     const w = o.world;
     if (!w || typeof w !== 'object') return null;
@@ -80,13 +81,16 @@ function parseSave(raw) {                 // -> clean save object, or null if mi
     if (w.bestFloor && typeof w.bestFloor === 'object') for (const id of Object.keys(w.bestFloor)) if (WORLD[id] && WORLD[id].type === 'dungeon' && isInt(w.bestFloor[id], 1, WORLD[id].floors)) bestFloor[id] = w.bestFloor[id];
     const zz = WORLD[zid];
     wd = { zone: zid, floor: zz.type === 'dungeon' && isInt(w.floor, 1, zz.floors) ? w.floor : 1,
-           town: typeof w.town === 'string' && WORLD[w.town] && WORLD[w.town].type === 'town' ? w.town : START_ZONE, cleared, bestFloor };
+           town: typeof w.town === 'string' && WORLD[w.town] && WORLD[w.town].type === 'town' ? w.town : START_ZONE, cleared, bestFloor, portal: null };
+    const q = w.portal;                                   // optional town portal waiting in a town
+    if (q && typeof q === 'object' && WORLD[q.town] && WORLD[q.town].type === 'town' && WORLD[q.zone] && WORLD[q.zone].type !== 'town'
+        && isInt(q.floor, 1, WORLD[q.zone].floor || WORLD[q.zone].floors || 1) && isNum(q.x, 0, MW * TS) && isNum(q.y, 0, MH * TS)) wd.portal = { town: q.town, zone: q.zone, floor: q.floor, x: q.x, y: q.y };
   }
   return {
-    world: wd, skills: sk, savedAt: o.savedAt, seed: o.seed, depth: o.depth, best: isInt(o.best, 1, 9999) ? o.best : o.depth,
+    world: wd, skills: sk, savedAt: o.savedAt, seed: o.seed, depth: o.depth, best: isInt(o.best, 1, 9999) ? o.best : Math.max(1, o.depth),
     kills: isInt(o.kills, 0, 1e9) ? o.kills : 0, explored: o.v < 3 ? null : exp,
     player: { level: p.level, xp: p.xp, hp: p.hp, mp: p.mp, gold: p.gold, potions: { hp: p.potions.hp, mp: p.potions.mp },
-              inv, weapon, armor, pos: o.v < 3 ? null : pos }
+              inv, weapon, armor, scrolls, pos: o.v < 3 ? null : pos }
   };
 }
 
@@ -122,9 +126,9 @@ function saveGame() {
   if (!storageAvailable()) return { ok: false, error: 'Saving is unavailable (browser storage is blocked)' };
   const data = {
     v: SAVE_VERSION, savedAt: Date.now(), seed, depth, best: bestDepth, kills,
-    world: { zone: zoneId, floor, town: world.town, cleared: world.cleared, bestFloor: world.bestFloor },
+    world: { zone: zoneId, floor, town: world.town, cleared: world.cleared, bestFloor: world.bestFloor, portal: world.portal },
     player: { level: P.level, xp: P.xp, hp: P.hp, mp: P.mp, gold: P.gold, potions: P.potions, inv: P.inv,
-              weapon: P.weapon, armor: P.armor, x: P.x, y: P.y },
+              weapon: P.weapon, armor: P.armor, scrolls: P.scrolls, x: P.x, y: P.y },
     skills: { cls: P.cls, points: P.skillPoints, ranks: P.ranks, slots: P.slots },
     explored: packExplored()
   };
@@ -147,12 +151,13 @@ function loadGame() {                     // -> true on success
   const d = c.data;
   seed = d.seed; kills = d.kills;
   bestDepth = Math.max(bestDepth, d.best, d.depth);
-  world = { cleared: Object.assign({}, d.world.cleared), bestFloor: Object.assign({}, d.world.bestFloor), town: d.world.town };
+  world = { cleared: Object.assign({}, d.world.cleared), bestFloor: Object.assign({}, d.world.bestFloor), town: d.world.town, portal: d.world.portal };
+  floorCache = {};
   P = makePlayer(d.skills.cls);
   P.ranks = Object.assign({}, d.skills.ranks); P.slots = d.skills.slots.slice(); P.skillPoints = d.skills.points;
   const s = d.player;
   P.level = s.level; P.xp = s.xp; P.gold = s.gold; P.potions = s.potions;
-  P.inv = s.inv; P.weapon = s.weapon; P.armor = s.armor;
+  P.inv = s.inv; P.weapon = s.weapon; P.armor = s.armor; P.scrolls = s.scrolls;
   recalc(); P.hp = clamp(s.hp, 1, P.maxhp); P.mp = clamp(s.mp, 0, P.maxmp);
   messages = []; texts = [];
   invOpen = false; treeOpen = false; npcOpen = null; hintT = 6;

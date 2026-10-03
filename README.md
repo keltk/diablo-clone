@@ -5,11 +5,17 @@ Mouse/keyboard and touch are supported.
 
 ## Controls
 - Click/tap to move, attack and pick up. Tap an NPC to walk to it and talk (or press **E** next to one).
-- Auto-attack is class flavored. Skill slots: **1-4** or the big round buttons. **Q / W** potions, **I** bag, **T** skill tree, **P** pause, **Esc** closes panels.
+- Auto-attack is class flavored. Skill slots: **1-4** or the big round buttons. **Q / W** potions, **G** Town Portal scroll (or the cyan *Portal* button), **I** bag, **T** skill tree, **P** pause, **Esc** closes panels.
 
 ## World
 Haven (town 1) -> Old Crypt (dungeon, 3 floors, boss) / Ember Caverns (dungeon, unlocked by the Crypt boss) / King's Road (unlocked by beating either) -> Fenwick (town 2) -> Frostbound Mines.
 Towns have a Merchant (buy/sell; stock refreshes on every visit and improves with your best depth), a Healer (free heal) and, in Haven, a Trainer (respec for gold).
+The dungeon's up stairs on ANY floor ("Exit to town") leave the dungeon straight to its parent town; stairs down go one floor deeper.
+**Town Portal scrolls** (75g at any Merchant, always in stock, max 20, you start with 1): using one channels for 2s (taking damage cancels it
+and keeps the scroll), then takes you to your town and opens a portal there. Walking into the portal puts you back on the same floor
+at the same spot. Floors you visited this session (dungeon + floor) are remembered: explored map, surviving monsters and dropped loot.
+Taking stairs down to a visited floor restores it too. The floor memory is session-only; a save stores the scroll count and a pending portal
+(the floor is rebuilt from its seed on load, with fresh monsters).
 Dying returns you to the last town (-10% gold, gear and XP kept).
 
 ## Adding a zone (data-driven - see `js/world.js`)
@@ -26,7 +32,7 @@ Then add a mark to a town layout so the player can reach it: put e.g. `'4'` in t
 `'4': { exit: 'dun4' }` in that town's `marks`. A `road` entry (`from`/`to` towns) links two towns the same way (a mark in each town).
 New towns are ASCII layouts (`#` wall, `%` building, `^` tree, `F` fountain, `,` grass, `.` cobble, `@` spawn, mark chars for NPCs/exits).
 Themes (colors) live in `THEMES`, NPC kinds in `NPC_TYPES` (panels in `js/townui.js`).
-Saves only store zone ids, floors and boss-cleared flags, so adding zones never breaks old saves.
+Save format is v4 (v1-v3 still load; scrolls default to 0). Saves only store zone ids, floors and boss-cleared flags, so adding zones never breaks old saves.
 
 ## Files
 `util state classes world layout map items entities skills save menu skillui townui input render ui main` (all in `js/`).

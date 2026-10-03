@@ -125,7 +125,14 @@ let zone = null, zoneId = START_ZONE, floor = 1;
 let exits = [], npcs = [];
 let floorTint = null, wallTint = null;                 // per-tile palette indices (towns), null = palette 0
 let world = freshWorld();                               // persistent progress (saved)
-function freshWorld() { return { cleared: {}, bestFloor: {}, town: START_ZONE }; }
+function freshWorld() { return { cleared: {}, bestFloor: {}, town: START_ZONE, portal: null }; }
+// Session memory of visited floors (not saved): explored fog, surviving monsters and loot, keyed by 'zoneId:floor'.
+// Layouts are deterministic from the run seed, so only the changing state needs remembering. Cleared on new game / load.
+let floorCache = {};
+function leaveZone() {
+  if (!zone || zone.type === 'town' || !explored) return;
+  floorCache[zoneId + ':' + floor] = { explored, enemies: enemies.filter(e => !e.dead), ground };
+}
 
 const isTown = () => zone && zone.type === 'town';
 const theme = () => THEMES[(zone && zone.theme)] || THEMES.crypt;
@@ -199,6 +206,18 @@ function buildTown(z) {
     }
   }
   computeWallVis();
+  const pt = world.portal;                                   // a town portal waiting to take the player back
+  if (pt && pt.town === zoneId && WORLD[pt.zone]) {
+    const sx = Math.floor(spawn.x / TS), sy = Math.floor(spawn.y / TS);
+    const free = (x, y) => walkable(x, y) && map[y * MW + x] === 0 && !exitAt(x, y) && !npcs.some(n => Math.floor(n.x / TS) === x && Math.floor(n.y / TS) === y)
+      && walkable(x + 1, y) && walkable(x - 1, y) && walkable(x, y + 1) && walkable(x, y - 1);
+    let spot = null;
+    for (let r = 2; r <= 8 && !spot; r++) for (let dy = -r; dy <= r && !spot; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) === r && free(sx + dx, sy + dy)) { spot = [sx + dx, sy + dy]; break; }
+    }
+    if (spot) mkExit('portal', spot[0], spot[1], { to: pt.zone, floor: pt.floor, arrive: '', pos: { x: pt.x, y: pt.y }, kind: 'tp',
+      label: 'Portal: ' + WORLD[pt.zone].name + (WORLD[pt.zone].type === 'dungeon' ? ' F' + pt.floor : '') });
+  }
   return spawn;
 }
 
@@ -219,9 +238,8 @@ function buildDungeonFloor(z, fl) {
   generateDungeon();
   floorTint = wallTint = null;
   const r0 = rooms[0], last = fl >= z.floors;
-  mkExit('up', r0.x, r0.y, fl === 1
-    ? { to: z.town, floor: 1, arrive: zoneId, kind: 'up', label: 'To ' + WORLD[z.town].name }
-    : { to: zoneId, floor: fl - 1, arrive: 'down', kind: 'up', label: 'Stairs up' });
+  // stairs up always leave the dungeon, straight to the parent town (corner of the first room, away from the main paths)
+  mkExit('up', r0.x, r0.y, { to: z.town, floor: 1, arrive: zoneId, kind: 'up', label: 'Exit to town' });
   const dn = mkExit('down', stairs.tx, stairs.ty, last
     ? { to: z.town, floor: 1, arrive: zoneId, kind: 'portal', label: 'Portal to ' + WORLD[z.town].name, needBoss: !!z.boss }
     : { to: zoneId, floor: fl + 1, arrive: 'up', kind: 'stairs', label: 'Stairs down' });
@@ -264,6 +282,7 @@ function enterZone(id, fl, opts) {
   opts = opts || {};
   if (!WORLD[id]) id = START_ZONE;
   const z = WORLD[id];
+  leaveZone();
   zone = z; zoneId = id;
   floor = z.type === 'dungeon' ? clamp(fl | 0 || 1, 1, z.floors) : 1;
   depth = z.type === 'dungeon' ? z.depthStart + floor - 1 : z.type === 'road' ? (z.depth || 1) : 0;
@@ -275,9 +294,15 @@ function enterZone(id, fl, opts) {
   else spawn = buildRoad(z);
   // lock state of exits (locked ones become solid gates)
   for (const e of exits) { e.locked = exitLocked(e); map[e.ty * MW + e.tx] = e.locked ? 3 : 2; }
+  const cached = z.type !== 'town' && floorCache[id + ':' + floor];     // visited earlier this session: restore fog, monsters, loot
+  if (cached && cached.explored.length === explored.length) {
+    explored = cached.explored; ground = cached.ground;
+    enemies = cached.enemies;
+    for (const e of enemies) { e.aggro = false; e.path = []; e.stun = 0; e.slow = 0; }
+  }
   if (opts.arrive) { const ex = exits.find(e => e.id === opts.arrive); if (ex) spawn = spawnNear(ex); }
   else if (!spawn) spawn = spawnNear(exits[0]);
-  P.x = spawn.x; P.y = spawn.y; P.path = []; P.target = null; P.pickup = null; P.talk = null; P.whirl = null;
+  P.x = spawn.x; P.y = spawn.y; P.path = []; P.target = null; P.pickup = null; P.talk = null; P.whirl = null; P.tpT = 0;
   if (opts.pos && !blocked(opts.pos.x, opts.pos.y, P.r)) { P.x = opts.pos.x; P.y = opts.pos.y; }
   rnd = mulberry32(freshSeed());                        // back to a non-deterministic stream for combat/loot
   mmDirty = true; reveal();
@@ -300,8 +325,31 @@ function useExit(e) {
     if (time > fullMsgT) { msg('The portal is sealed until the ' + (zone.boss ? zone.boss.name : 'boss') + ' dies.'); fullMsgT = time + 2; }
     return;
   }
-  enterZone(e.to, e.floor, { arrive: e.arrive });
+  if (e.kind === 'tp') world.portal = null;               // the portal is used up
+  enterZone(e.to, e.floor, { arrive: e.arrive, pos: e.pos });
   autosave('zone');
+}
+
+// ---- town portal scroll: 2s channel (interrupted by damage), then to the parent town; a portal there returns you here ----
+const TP_CHANNEL = 2;
+function useScroll() {
+  if (P.dead || P.tpT > 0) return;
+  if (isTown()) { msg('You are already in town'); return; }
+  if (P.scrolls < 1) { msg('No Town Portal scrolls - buy them from the Merchant'); return; }
+  P.tpT = TP_CHANNEL;
+  msg('Opening a town portal... (damage interrupts)');
+  addEffect({ type: 'ring', x: P.x, y: P.y, r0: 40, r1: 8, dur: TP_CHANNEL, color: '90,220,255' });
+}
+function cancelScroll() { if (P.tpT > 0) { P.tpT = 0; msg('Town portal interrupted!'); } }
+function finishScroll() {
+  P.tpT = 0;
+  const town = zone.type === 'dungeon' ? zone.town : (WORLD[world.town] ? world.town : START_ZONE);
+  if (P.scrolls < 1 || isTown()) return;
+  P.scrolls--;
+  world.portal = { town, zone: zoneId, floor, x: P.x, y: P.y };
+  enterZone(town, 1, { arrive: 'portal' });
+  autosave('zone');
+  msg('A portal back to ' + WORLD[world.portal.zone].name + ' is waiting here');
 }
 
 // a dungeon's boss died
@@ -320,7 +368,7 @@ function respawn() {
   const lost = Math.floor(P.gold * 0.1);
   P.gold -= lost;
   P.dead = false; P.deadTime = 0;
-  recalc(); P.hp = P.maxhp; P.mp = P.maxmp; P.cds = {}; P.buffs = { warcry: 0, wcArmor: 0, evade: 0, shadow: false }; P.whirl = null;
+  recalc(); P.hp = P.maxhp; P.mp = P.maxmp; P.cds = {}; P.tpT = 0; P.buffs = { warcry: 0, wcArmor: 0, evade: 0, shadow: false }; P.whirl = null;
   invOpen = false; treeOpen = false;
   enterZone(WORLD[world.town] ? world.town : START_ZONE, 1, {});
   if (lost) addText(P.x, P.y, '-' + lost + ' gold', '#f5c518', 16, 1.6);

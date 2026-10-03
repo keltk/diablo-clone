@@ -19,7 +19,7 @@ function makePlayer(clsId) {
     weapon: { slot: 'weapon', rar: 0, name: 'Rusty Sword', dmg: 3, armor: 0, hp: 0, value: 5 },
     armor: null,
     skillPoints: 1, ranks: {}, slots: [null, null, null, null], cds: {},      // skills: the starter skill is learned for free
-    buffs: { warcry: 0, wcArmor: 0, evade: 0, shadow: false }, whirl: null, bonus: {}, talk: null
+    buffs: { warcry: 0, wcArmor: 0, evade: 0, shadow: false }, whirl: null, bonus: {}, talk: null, scrolls: 1, tpT: 0
   };
   p.ranks[c.start] = 1; p.slots[0] = c.start;
   return p;
@@ -32,7 +32,7 @@ function newRun(clsId) {
   recalc(); P.hp = P.maxhp; P.mp = P.maxmp;
   messages = []; texts = [];
   invOpen = false; treeOpen = false; npcOpen = null; hintT = 20;
-  world = freshWorld();
+  world = freshWorld(); floorCache = {};
   autosaveOK = !saveExists();      // never let a fresh run silently overwrite an existing save
   enterZone(START_ZONE, 1);
 }
@@ -100,9 +100,9 @@ function hurtPlayer(raw) {
   let dmg = raw * 20 / (20 + armorVal()) * (1 - P.bonus.reduce);
   if (P.buffs.evade > 0) dmg *= 0.4;
   dmg = Math.max(1, Math.round(dmg));
-  P.hp -= dmg; P.flash = 0.15;
+  P.hp -= dmg; P.flash = 0.15; cancelScroll();
   addText(P.x, P.y, String(dmg), '#ff4040', 16);
-  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deadTime = time; invOpen = false; treeOpen = false; P.path = []; P.target = null; mouse.down = false; saveBest(); }
+  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.tpT = 0; P.deadTime = time; invOpen = false; treeOpen = false; P.path = []; P.target = null; mouse.down = false; saveBest(); }
 }
 
 function nearestEnemy(maxDist, needLOS) {
@@ -169,6 +169,7 @@ const inAttackRange = e => {
 };
 
 function updatePlayer(dt) {
+  if (P.tpT > 0) { P.tpT -= dt; if (P.tpT <= 0) { finishScroll(); return; } }
   P.flash = Math.max(0, P.flash - dt); P.atkCd = Math.max(0, P.atkCd - dt); P.potCd = Math.max(0, P.potCd - dt);
   P.swing = Math.max(0, P.swing - dt);
   updateSkills(dt);

@@ -55,6 +55,7 @@ function drawInventory() {
   text('Armor   ' + armorVal(), 20, 312, '#a0c8ff', 13);
   text('Max HP  ' + P.maxhp, 20, 334, '#ff9a9a', 13);
   text('Gold    ' + P.gold, 20, 356, '#f5c518', 13);
+  text('Portals ' + P.scrolls + '  (G)', 20, 376, '#8ae8f8', 12);
   for (let i = 0; i < INV_SIZE; i++) {
     const r = invSlot(i);
     box(r.x, r.y, r.w, r.h, '#0d0d12', '#444');
@@ -90,6 +91,7 @@ function drawButton(b) {
   else if (b.id === 'hp') { cd = P.potCd; max = 0.8; count = P.potions.hp; disabled = count === 0; }
   else if (b.id === 'mp') { cd = P.potCd; max = 0.8; count = P.potions.mp; disabled = count === 0; }
   else if (b.id === 'skills') badge = P.skillPoints;
+  else if (b.id === 'tp') { count = P.scrolls; cd = P.tpT; max = TP_CHANNEL; disabled = count === 0 || isTown(); }
   const x = b.x, y = b.y, r = b.r, down = time < b.pressT;
   ctx.fillStyle = 'rgba(10,10,16,0.78)'; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = down ? '#fff' : col; ctx.globalAlpha = (b.id === 'inv' && invOpen) || (b.id === 'skills' && treeOpen) || (b.id === 'pause' && paused) ? 1 : 0.9;
@@ -177,7 +179,7 @@ function drawHUD() {
     const hs = Math.round(13 * Math.min(HUD.s, 1.2));
     const segs = touchDevice
       ? ['Tap to move (hold to keep walking)', 'tap an NPC to talk', 'you auto-attack when close', 'buttons: skills & potions']
-      : ['Click to move (hold to walk)', 'click an NPC to talk (or E)', 'auto-attacks when close', '1-4 Skills', 'T Skill tree', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
+      : ['Click to move (hold to walk)', 'click an NPC to talk (or E)', 'auto-attacks when close', '1-4 Skills', 'T Skill tree', 'G Town portal', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
     ctx.font = 'bold ' + hs + 'px monospace';
     const lines = []; let cur = '';
     for (const sg of segs) {                       // greedy word-wrap of the hint segments to the screen width

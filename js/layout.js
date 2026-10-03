@@ -48,6 +48,7 @@ function layoutHUD() {
   bs.push(btn('pause', m + sb / 2, sy, sb / 2, 'Pause', '#8a8f9c', 'P'));
   bs.push(btn('inv', m + sb * 1.5 + gap, sy, sb / 2, 'Bag', '#d6b04a', 'I'));
   bs.push(btn('skills', m + sb * 2.5 + 2 * gap, sy, sb / 2, 'Skills', '#b078ff', 'T'));
+  bs.push(btn('tp', m + sb * 3.5 + 3 * gap, sy, sb / 2, 'Portal', '#3ac8d8', 'G'));
   HUD.buttons = bs;
   HUD.hudTop = Math.min(leftTop - gap - sb, rightTop) - gap;
   HUD.mapBottom = 8 + (MH * 2 + 12);

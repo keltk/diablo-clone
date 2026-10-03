@@ -180,7 +180,7 @@ function drawEffect(f) {
 function drawExitTile(e, cx, cy) {
   const locked = e.locked, sealed = e.needBoss && enemies.some(b => b.boss && !b.dead);
   const pal = locked || sealed ? ['#6b1f1f', '#a03030'] : e.kind === 'up' ? ['#1f4f8a', '#4a8ae0'] : e.kind === 'road' ? ['#8a6a1f', '#e0b040']
-            : e.kind === 'portal' ? ['#5a2a8a', '#b070f0'] : ['#1d7a3c', '#33c26a'];
+            : e.kind === 'portal' ? ['#5a2a8a', '#b070f0'] : e.kind === 'tp' ? ['#1a6a7a', '#40e0f0'] : ['#1d7a3c', '#33c26a'];
   for (let k = 0; k < 4; k++) {
     const f = 1 - k * 0.22;
     poly([[cx, cy - HH * f + k * 2], [cx + HW * f, cy + k * 2], [cx, cy + HH * f + k * 2], [cx - HW * f, cy + k * 2]], k & 1 ? pal[1] : pal[0]);
@@ -250,7 +250,7 @@ function drawWorld() {
     const locked = e.locked, sealed = e.needBoss && enemies.some(b => b.boss && !b.dead);
     let lab = exitLabel(e), col = '#cfeccf';
     const tz = WORLD[e.to];
-    if (tz && tz.recLevel && e.to !== zoneId && tz.type === 'dungeon') lab += '  (Lv ' + tz.recLevel + '+)';
+    if (tz && tz.recLevel && e.to !== zoneId && tz.type === 'dungeon' && e.kind === 'dungeon') lab += '  (Lv ' + tz.recLevel + '+)';
     if (locked) { lab += '  [LOCKED]'; col = '#ff9a9a'; } else if (sealed) { lab += '  [SEALED]'; col = '#ff9a9a'; }
     text(lab, projX(wx, wy) - cam.x, projY(wx, wy, 0) - cam.y - (locked ? 34 : 24), col, 12, 'center');
   }

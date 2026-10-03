@@ -11,6 +11,7 @@ function pressButton(id) {
   switch (id) {
     case 'slot0': case 'slot1': case 'slot2': case 'slot3': castSlot(+id[4]); break;
     case 'skills': toggleTree(); break;
+    case 'tp': useScroll(); break;
     case 'hp': usePotion('hp'); break;
     case 'mp': usePotion('mp'); break;
     case 'inv': toggleInventory(); break;
@@ -153,6 +154,7 @@ window.addEventListener('keydown', ev => {
     case 'Digit3': case 'Numpad3': pressButton('slot2'); break;
     case 'Digit4': case 'Numpad4': pressButton('slot3'); break;
     case 'KeyT': pressButton('skills'); break;
+    case 'KeyG': pressButton('tp'); break;
     case 'KeyQ': pressButton('hp'); break;
     case 'KeyW': pressButton('mp'); break;
     case 'KeyI': pressButton('inv'); break;
