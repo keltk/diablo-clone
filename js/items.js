@@ -37,26 +37,18 @@ function genItem(d, minRar) {
 // ===================================================================
 //  PLAYER STATS
 // ===================================================================
-const gear = k => ((P.weapon && P.weapon[k]) || 0) + ((P.armor && P.armor[k]) || 0);
-const baseDmg = () => 4 + 2 * (P.level - 1) + gear('dmg');
-const armorVal = () => gear('armor');
-function recalc() {
-  P.maxhp = 100 + 15 * (P.level - 1) + gear('hp');
-  P.maxmp = 50 + 8 * (P.level - 1);
-  P.hp = Math.min(P.hp, P.maxhp);
-  P.mp = Math.min(P.mp, P.maxmp);
-}
+// (gear(), baseDmg(), armorVal() and recalc() live in classes.js because they depend on the class and skills)
 const xpNeed = lv => Math.round(40 * Math.pow(lv, 1.5));
 
 function gainXp(n) {
   P.xp += n;
   while (P.xp >= xpNeed(P.level)) {
     P.xp -= xpNeed(P.level);
-    P.level++;
+    P.level++; P.skillPoints++;
     recalc();
     P.hp = P.maxhp; P.mp = P.maxmp;
     addText(P.x, P.y, 'LEVEL UP!', '#ffe14d', 20, 1.6);
     addEffect({ type: 'ring', x: P.x, y: P.y, r0: 10, r1: 90, dur: 0.6, color: '255,225,77' });
-    msg('You reached level ' + P.level + '!');
+    msg('Level ' + P.level + '! +1 skill point (T)');
   }
 }

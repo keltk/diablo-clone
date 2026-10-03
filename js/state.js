@@ -7,7 +7,7 @@
 // ===================================================================
 let map, explored, wallVis, rooms, stairs;
 let P, enemies, ground, projectiles, effects, texts, messages;
-let depth, kills, paused = false, invOpen = false, time = 0, hintT = 0;
+let depth, kills, paused = false, invOpen = false, treeOpen = false, classSelectOpen = false, time = 0, hintT = 0;
 let mmCanvas, mmDirty = true;
 let bestDepth = 1;
 const cam = { x: 0, y: 0 };

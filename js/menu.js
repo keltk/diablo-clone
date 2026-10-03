@@ -62,8 +62,7 @@ function menuAction(id) {
       if (cf !== 'delete') { menuAsk('delete'); break; }
       menu.confirm = null;
       deleteSave();
-      newRun();                       // fresh run (autosave is allowed again since no save exists)
-      closePause(); msg('Save deleted - new run started');
+      closePause(); openClassSelect();   // fresh run: pick a class (autosave is allowed again since no save exists)
       break;
     case 'continue':
       if (loadGame()) { titleOpen = false; msg('Welcome back!'); } else menuSay('Could not load the save', true);
@@ -71,7 +70,7 @@ function menuAction(id) {
     case 'new':
       if (saveExists() && cf !== 'new') { menuAsk('new'); break; }
       menu.confirm = null;
-      newRun(); titleOpen = false;    // autosave stays off until you save manually (the old save is kept)
+      titleOpen = false; openClassSelect();   // autosave stays off until you save manually (the old save is kept)
       break;
   }
 }
@@ -82,5 +81,5 @@ function saveInfoLines() {              // for display: array of [text, color]
   if (sv.status === 'corrupt') return [['Saved data is invalid / old', '#ff8a8a'], ['and was ignored', '#ff8a8a']];
   if (sv.status === 'none') return [['No saved game', '#aaa']];
   const d = sv.data, when = new Date(d.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  return [['Level ' + d.player.level + '   Depth ' + d.depth, '#ffe14d'], ['Gold ' + d.player.gold + '   Best depth ' + d.best, '#f5c518'], ['Saved ' + when, '#cfd8ff']];
+  return [[CLASSES[d.skills.cls].name + '   Level ' + d.player.level + '   Depth ' + d.depth, '#ffe14d'], ['Gold ' + d.player.gold + '   Best depth ' + d.best, '#f5c518'], ['Saved ' + when, '#cfd8ff']];
 }

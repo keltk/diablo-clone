@@ -27,15 +27,16 @@ function layoutHUD() {
   const m = 14, gap = 10, sb = Math.round(B * 0.72); // margin, gap, small-button diameter
   HUD.s = s; HUD.B = B; HUD.R = R;
   HUD.statsS = Math.min(s, (W - 142 - 24) / 250);
-  const by = H - m - B / 2;
+  const by = H - m - B / 2, by2 = by - B - gap;
   const btn = (id, x, y, r, label, col, key) => ({ id, x, y, r, label, col, key, pressT: 0 });
-  const bs = [
-    btn('fire', W - m - B / 2, by, B / 2, 'Fire', '#ff8a1e', '1'),
-    btn('nova', W - m - B - gap - B / 2, by, B / 2, 'Nova', '#6ec0ff', '2'),
+  const rx = W - m - B / 2, rx2 = W - m - B - gap - B / 2;
+  const bs = [                                   // skill bar: 2x2 block bottom-right (slot 1 = thumb corner)
+    btn('slot0', rx, by, B / 2, '', '#444', '1'), btn('slot1', rx2, by, B / 2, '', '#444', '2'),
+    btn('slot2', rx, by2, B / 2, '', '#444', '3'), btn('slot3', rx2, by2, B / 2, '', '#444', '4'),
     btn('hp', m + B / 2, by, B / 2, 'HP', '#d62c2c', 'Q'),
     btn('mp', m + B + gap + B / 2, by, B / 2, 'MP', '#2c5ad6', 'W')
   ];
-  let leftTop = H - m - B, rightTop = H - m - B;
+  let leftTop = H - m - B, rightTop = H - m - 2 * B - gap;
   const wide = W >= 4 * B + 4 * R + 2 * m + 4 * gap + 40;
   if (wide) {               // orbs sit between the two button clusters
     HUD.orbs = [{ x: W / 2 - R - 8, y: H - m - R }, { x: W / 2 + R + 8, y: H - m - R }];
@@ -43,10 +44,12 @@ function layoutHUD() {
     leftTop -= gap + 2 * R; rightTop -= gap + 2 * R;
     HUD.orbs = [{ x: m + R, y: leftTop + R }, { x: W - m - R, y: rightTop + R }];
   }
-  bs.push(btn('pause', m + sb / 2, leftTop - gap - sb / 2, sb / 2, 'Pause', '#8a8f9c', 'P'));
-  bs.push(btn('inv', W - m - sb / 2, rightTop - gap - sb / 2, sb / 2, 'Bag', '#d6b04a', 'I'));
+  const sy = leftTop - gap - sb / 2;              // small menu buttons: Pause / Bag / Skills in a row above the left cluster
+  bs.push(btn('pause', m + sb / 2, sy, sb / 2, 'Pause', '#8a8f9c', 'P'));
+  bs.push(btn('inv', m + sb * 1.5 + gap, sy, sb / 2, 'Bag', '#d6b04a', 'I'));
+  bs.push(btn('skills', m + sb * 2.5 + 2 * gap, sy, sb / 2, 'Skills', '#b078ff', 'T'));
   HUD.buttons = bs;
-  HUD.hudTop = Math.min(leftTop, rightTop) - gap - sb;
+  HUD.hudTop = Math.min(leftTop - gap - sb, rightTop) - gap;
   HUD.mapBottom = 8 + (MH * 2 + 12);
   HUD.topZone = Math.max(10 + 92 * HUD.statsS, HUD.mapBottom) + 8;   // y below the stats panel / minimap
 
@@ -54,6 +57,7 @@ function layoutHUD() {
   let ps = clamp(52 / (68 * VZ), 1, 1.5);
   ps = Math.min(ps, (W - 12) / PANEL.w, (H - 12) / PANEL.h);
   PANEL.s = ps; PANEL.x = Math.round((W - PANEL.w * ps) / 2); PANEL.y = Math.round((H - PANEL.h * ps) / 2);
+  layoutTree();
 }
 
 function buttonAt(x, y) {

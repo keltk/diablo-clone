@@ -6,7 +6,8 @@
 // player position, explored-map bits and best depth. Enemies/loot on the floor are NOT stored (the floor is rebuilt).
 
 const SAVE_KEY = 'tinydiablo_save';
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 2;         // v1 saves (no class/skills) still load: they get default skills
+const OLD_SAVE_VERSIONS = [1];
 
 let autosaveOK = true;      // false after a fresh run started while a save exists, until the player saves manually
 let titleOpen = false;      // start screen (Continue / New Game)
@@ -37,7 +38,7 @@ function cleanItem(it, slot) {            // returns a sanitized copy or null
 function parseSave(raw) {                 // -> clean save object, or null if missing/invalid/old version
   let o;
   try { o = JSON.parse(raw); } catch (e) { return null; }
-  if (!o || typeof o !== 'object' || o.v !== SAVE_VERSION) return null;
+  if (!o || typeof o !== 'object' || (o.v !== SAVE_VERSION && !OLD_SAVE_VERSIONS.includes(o.v))) return null;
   const p = o.player;
   if (!p || typeof p !== 'object') return null;
   if (!isInt(o.seed, 0, 4294967295) || !isInt(o.depth, 1, 9999) || !isNum(o.savedAt, 0, 1e15)) return null;
@@ -49,8 +50,25 @@ function parseSave(raw) {                 // -> clean save object, or null if mi
   const armor = p.armor == null ? null : cleanItem(p.armor, 'armor'); if (p.armor != null && !armor) return null;
   const pos = isNum(p.x, 0, MW * TS) && isNum(p.y, 0, MH * TS) ? { x: p.x, y: p.y } : null;   // position is optional
   const exp = typeof o.explored === 'string' && o.explored.length === MW * MH / 4 && /^[0-9a-f]+$/.test(o.explored) ? o.explored : null;
+  // class + skills (v2). v1 saves default to a Warrior with the starter skill and all other points unspent.
+  let sk;
+  if (o.v === 1) {
+    const c = CLASSES.warrior;
+    sk = { cls: c.id, points: p.level, ranks: { [c.start]: 1 }, slots: [c.start, null, null, null] };
+  } else {
+    const s = o.skills;
+    if (!s || typeof s !== 'object' || !CLASSES[s.cls] || !isInt(s.points, 0, 9999) || !s.ranks || typeof s.ranks !== 'object' || !Array.isArray(s.slots)) return null;
+    const ranks = {};
+    for (const id of Object.keys(s.ranks)) if (SKILLS[id] && SKILLS[id].cls === s.cls && isInt(s.ranks[id], 1, MAX_RANK)) ranks[id] = s.ranks[id];
+    const slots = [null, null, null, null];
+    for (let i = 0; i < 4; i++) {
+      const id = s.slots[i];
+      if (typeof id === 'string' && ranks[id] && SKILLS[id].kind === 'active' && !slots.includes(id)) slots[i] = id;
+    }
+    sk = { cls: s.cls, points: s.points, ranks, slots };
+  }
   return {
-    savedAt: o.savedAt, seed: o.seed, depth: o.depth, best: isInt(o.best, 1, 9999) ? o.best : o.depth,
+    skills: sk, savedAt: o.savedAt, seed: o.seed, depth: o.depth, best: isInt(o.best, 1, 9999) ? o.best : o.depth,
     kills: isInt(o.kills, 0, 1e9) ? o.kills : 0, explored: exp,
     player: { level: p.level, xp: p.xp, hp: p.hp, mp: p.mp, gold: p.gold, potions: { hp: p.potions.hp, mp: p.potions.mp },
               inv, weapon, armor, pos }
@@ -91,6 +109,7 @@ function saveGame() {
     v: SAVE_VERSION, savedAt: Date.now(), seed, depth, best: bestDepth, kills,
     player: { level: P.level, xp: P.xp, hp: P.hp, mp: P.mp, gold: P.gold, potions: P.potions, inv: P.inv,
               weapon: P.weapon, armor: P.armor, x: P.x, y: P.y },
+    skills: { cls: P.cls, points: P.skillPoints, ranks: P.ranks, slots: P.slots },
     explored: packExplored()
   };
   if (!storageSet(JSON.stringify(data))) return { ok: false, error: 'Saving failed (storage full or blocked)' };
@@ -112,7 +131,8 @@ function loadGame() {                     // -> true on success
   const d = c.data;
   seed = d.seed; depth = d.depth; kills = d.kills;
   bestDepth = Math.max(bestDepth, d.best);
-  P = makePlayer();
+  P = makePlayer(d.skills.cls);
+  P.ranks = Object.assign({}, d.skills.ranks); P.slots = d.skills.slots.slice(); P.skillPoints = d.skills.points;
   const s = d.player;
   P.level = s.level; P.xp = s.xp; P.gold = s.gold; P.potions = s.potions;
   P.inv = s.inv; P.weapon = s.weapon; P.armor = s.armor;

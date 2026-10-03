@@ -5,12 +5,12 @@
 // ===================================================================
 //  ACTIONS (shared by on-screen buttons and keyboard)
 // ===================================================================
-function toggleInventory() { if (!P.dead) { invOpen = !invOpen; invSel = null; } }
-function togglePause() { if (P.dead || titleOpen) return; if (paused) closePause(); else openPause(); }
+function toggleInventory() { if (!P.dead) { invOpen = !invOpen; invSel = null; treeOpen = false; slotSel = null; } }
+function togglePause() { if (P.dead || titleOpen || classSelectOpen) return; if (paused) closePause(); else openPause(); }
 function pressButton(id) {
   switch (id) {
-    case 'fire': castFireball(); break;
-    case 'nova': castNova(); break;
+    case 'slot0': case 'slot1': case 'slot2': case 'slot3': castSlot(+id[4]); break;
+    case 'skills': toggleTree(); break;
     case 'hp': usePotion('hp'); break;
     case 'mp': usePotion('mp'); break;
     case 'inv': toggleInventory(); break;
@@ -78,12 +78,14 @@ function pointerPos(ev) {
 function setMouse(p) { mouse.x = p.x; mouse.y = p.y; updateMouseWorld(); }
 
 function onPress(ev, p) {
+  if (classSelectOpen) { classPress(p); return; }                 // class choice
   if (titleOpen || paused) { menuPress(p); return; }              // start screen / pause menu
-  if (P.dead) { if (time - P.deadTime > 0.6) newRun(); return; }
+  if (P.dead) { if (time - P.deadTime > 0.6) openClassSelect(); return; }
   if (invOpen && inPanel(p.x, p.y)) { panelPress(p.x, p.y, ev.button); return; }
+  if (treeOpen && inTree(p.x, p.y)) { treePress(p.x, p.y); return; }
   const b = buttonAt(p.x, p.y);
   if (b) { b.pressT = time + 0.15; pressButton(b.id); return; }
-  if (invOpen) { invOpen = false; invSel = null; return; }          // tap outside closes the panel
+  if (invOpen || treeOpen) { invOpen = false; invSel = null; treeOpen = false; slotSel = null; return; }   // tap outside closes the panels
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
   if (movePtr !== null) return;                                      // already steering with another finger
   movePtr = ev.pointerId;
@@ -127,6 +129,11 @@ for (const t of ['gesturestart', 'gesturechange', 'gestureend', 'dblclick', 'sel
 // ===================================================================
 window.addEventListener('keydown', ev => {
   if (ev.repeat) return;
+  if (classSelectOpen) {                             // class choice shortcuts
+    const i = ['Digit1', 'Digit2', 'Digit3', 'Numpad1', 'Numpad2', 'Numpad3'].indexOf(ev.code);
+    if (i >= 0) pickClass(CLASS_IDS[i % 3]);
+    return;
+  }
   if (titleOpen) {                                   // start screen shortcuts
     if (ev.code === 'Enter' || ev.code === 'KeyC') { if (saveExists()) menuAction('continue'); }
     else if (ev.code === 'KeyN') menuAction('new');
@@ -137,14 +144,17 @@ window.addEventListener('keydown', ev => {
     return;
   }
   switch (ev.code) {
-    case 'Digit1': case 'Numpad1': pressButton('fire'); break;
-    case 'Digit2': case 'Numpad2': pressButton('nova'); break;
+    case 'Digit1': case 'Numpad1': pressButton('slot0'); break;
+    case 'Digit2': case 'Numpad2': pressButton('slot1'); break;
+    case 'Digit3': case 'Numpad3': pressButton('slot2'); break;
+    case 'Digit4': case 'Numpad4': pressButton('slot3'); break;
+    case 'KeyT': pressButton('skills'); break;
     case 'KeyQ': pressButton('hp'); break;
     case 'KeyW': pressButton('mp'); break;
     case 'KeyI': pressButton('inv'); break;
-    case 'Escape': invOpen = false; invSel = null; break;
+    case 'Escape': invOpen = false; invSel = null; treeOpen = false; slotSel = null; break;
     case 'KeyP': pressButton('pause'); break;
-    case 'KeyR': if (P.dead) newRun(); break;
+    case 'KeyR': if (P.dead) openClassSelect(); break;
   }
 });
 window.addEventListener('resize', resize);

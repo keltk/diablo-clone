@@ -78,14 +78,21 @@ function drawInventory() {
 }
 
 function drawButton(b) {
-  let cd = 0, max = 1, count, disabled = false;
-  if (b.id === 'fire') { cd = P.cd[0]; max = 0.35; disabled = P.mp < 8; }
-  else if (b.id === 'nova') { cd = P.cd[1]; max = 2.5; disabled = P.mp < 25; }
+  let cd = 0, max = 1, count, disabled = false, label = b.label, col = b.col, key = b.key, badge = 0, empty = false;
+  if (b.id.startsWith('slot')) {                 // skill-bar slot: shows whichever skill is equipped there
+    const id = P.slots[+b.id.slice(4)];
+    if (!id) { empty = true; label = '+'; col = '#2a2a32'; }
+    else {
+      const def = SKILLS[id], r = rankOf(id);
+      label = def.short; col = def.color; cd = P.cds[id] || 0; max = cdOf(def, r); disabled = P.mp < manaCost(def, r);
+    }
+  }
   else if (b.id === 'hp') { cd = P.potCd; max = 0.8; count = P.potions.hp; disabled = count === 0; }
   else if (b.id === 'mp') { cd = P.potCd; max = 0.8; count = P.potions.mp; disabled = count === 0; }
+  else if (b.id === 'skills') badge = P.skillPoints;
   const x = b.x, y = b.y, r = b.r, down = time < b.pressT;
   ctx.fillStyle = 'rgba(10,10,16,0.78)'; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = down ? '#fff' : b.col; ctx.globalAlpha = (b.id === 'inv' && invOpen) || (b.id === 'pause' && paused) ? 1 : 0.9;
+  ctx.fillStyle = down ? '#fff' : col; ctx.globalAlpha = (b.id === 'inv' && invOpen) || (b.id === 'skills' && treeOpen) || (b.id === 'pause' && paused) ? 1 : 0.9;
   ctx.beginPath(); ctx.arc(x, y, r * 0.78, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
   if (disabled) { ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.beginPath(); ctx.arc(x, y, r * 0.78, 0, Math.PI * 2); ctx.fill(); }
   if (cd > 0) {                                  // cooldown: dark sweep draining downwards
@@ -93,14 +100,20 @@ function drawButton(b) {
     ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(x - r, y - r, r * 2, r * 2 * Math.min(1, cd / max)); ctx.restore();
   }
   ctx.strokeStyle = down ? '#fff' : '#8a7a55'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.stroke();
-  text(b.label, x, y, '#fff', Math.round(r * 0.36), 'center');
+  text(label, x, y, empty ? '#777' : '#fff', Math.round(r * (empty ? 0.8 : b.id.startsWith('slot') && label.length > 5 ? 0.30 : 0.36)), 'center');
+  if (badge > 0) {                               // unspent skill points
+    const bx = x + r * 0.7, by = y - r * 0.7, br = Math.max(11, r * 0.36);
+    ctx.fillStyle = '#1d8a3c'; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+    text(String(badge), bx, by, '#fff', Math.round(br * 1.1), 'center');
+  }
   if (count !== undefined) {                     // potion count badge
     const bx = x + r * 0.62, by = y - r * 0.62, br = Math.max(11, r * 0.3);
     ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = '#8a7a55'; ctx.lineWidth = 2; ctx.stroke();
     text(String(count), bx, by, count ? '#fff' : '#f66', Math.round(br * 1.1), 'center');
   }
-  if (!touchDevice) text(b.key, x - r * 0.6, y - r * 0.62, '#ffe14d', 12, 'center');
+  if (!touchDevice) text(key, x - r * 0.6, y - r * 0.62, '#ffe14d', 12, 'center');
 }
 
 function drawHUD() {
@@ -161,7 +174,7 @@ function drawHUD() {
     const hs = Math.round(13 * Math.min(HUD.s, 1.2));
     const segs = touchDevice
       ? ['Tap to move (hold to keep walking)', 'tap an enemy to chase it', 'you auto-attack when close', 'buttons: skills & potions']
-      : ['Click to move (hold to walk)', 'click an enemy to chase it', 'auto-attacks when close', '1 Fireball', '2 Nova', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
+      : ['Click to move (hold to walk)', 'click an enemy to chase it', 'auto-attacks when close', '1-4 Skills', 'T Skill tree', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
     ctx.font = 'bold ' + hs + 'px monospace';
     const lines = []; let cur = '';
     for (const sg of segs) {                       // greedy word-wrap of the hint segments to the screen width
@@ -207,16 +220,18 @@ function render() {
   drawWorld();
   ctx.fillStyle = vignette; ctx.fillRect(0, 0, W, H);
   if (P.flash > 0) { ctx.fillStyle = 'rgba(255,0,0,' + (P.flash * 1.2) + ')'; ctx.fillRect(0, 0, W, H); }
-  if (!titleOpen) drawHUD();
+  if (!titleOpen && !classSelectOpen) drawHUD();
   if (invOpen) drawInventory();
+  if (treeOpen) drawTree();
   const k = Math.min(1, W / 700);                                 // text scale for full-screen overlays
   if (paused || titleOpen) drawMenu();
-  if (P.dead) {
+  if (classSelectOpen) drawClassSelect();
+  if (P.dead && !classSelectOpen) {
     ctx.fillStyle = 'rgba(40,0,0,0.75)'; ctx.fillRect(0, 0, W, H);
     text('YOU DIED', W / 2, H / 2 - 70, '#e03030', 64 * k, 'center');
     text('Depth ' + depth + '   Level ' + P.level + '   Kills ' + kills + '   Gold ' + P.gold, W / 2, H / 2, '#ddd', 20 * Math.max(k, 0.75), 'center');
     text('Best depth: ' + bestDepth, W / 2, H / 2 + 34, '#f5c518', 18 * Math.max(k, 0.8), 'center');
-    text(touchDevice ? 'Tap to restart' : 'Tap or press R to restart', W / 2, H / 2 + 80, '#fff', 26 * Math.max(k, 0.8), 'center');
+    text(touchDevice ? 'Tap to restart (pick a class)' : 'Tap or press R to restart', W / 2, H / 2 + 80, '#fff', 26 * Math.max(k, 0.8), 'center');
   }
-  text('seed ' + seed, W - 8, 8 + MH * 2 + 26, 'rgba(255,255,255,0.35)', 10, 'right');
+  if (!classSelectOpen) text('seed ' + seed, W - 8, 8 + MH * 2 + 26, 'rgba(255,255,255,0.35)', 10, 'right');
 }

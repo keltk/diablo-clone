@@ -9,24 +9,29 @@ const freshSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>
 // Level layout + population is a pure function of (run seed, depth), so a save only needs those two numbers.
 const levelSeed = () => (seed ^ Math.imul(depth, 0x9E3779B1)) >>> 0;
 
-function makePlayer() {
-  return {
-    x: 0, y: 0, r: 10, speed: 170,
+function makePlayer(clsId) {
+  const c = CLASSES[clsId] || CLASSES.warrior;
+  const p = {
+    x: 0, y: 0, r: 10, speed: c.spd, baseSpeed: c.spd, cls: c.id,
     hp: 100, maxhp: 100, mp: 50, maxmp: 50, level: 1, xp: 0, gold: 0,
-    flash: 0, atkCd: 0, potCd: 0, cd: [0, 0], path: [], target: null, pickup: null, repathT: 0,
+    flash: 0, atkCd: 0, potCd: 0, path: [], target: null, pickup: null, repathT: 0,
     potions: { hp: 2, mp: 1 }, inv: [], face: 0, dead: false, swing: 0,
     weapon: { slot: 'weapon', rar: 0, name: 'Rusty Sword', dmg: 3, armor: 0, hp: 0, value: 5 },
-    armor: null
+    armor: null,
+    skillPoints: 1, ranks: {}, slots: [null, null, null, null], cds: {},      // skills: the starter skill is learned for free
+    buffs: { warcry: 0, wcArmor: 0, evade: 0, shadow: false }, whirl: null, bonus: {}
   };
+  p.ranks[c.start] = 1; p.slots[0] = c.start;
+  return p;
 }
 
-function newRun() {
+function newRun(clsId) {
   seed = freshSeed();
   depth = 1; kills = 0;
-  P = makePlayer();
+  P = makePlayer(clsId || 'warrior');
   recalc(); P.hp = P.maxhp; P.mp = P.maxmp;
   messages = []; texts = [];
-  invOpen = false; hintT = 20;
+  invOpen = false; treeOpen = false; hintT = 20;
   autosaveOK = !saveExists();      // never let a fresh run silently overwrite an existing save
   buildLevel();
 }
@@ -34,7 +39,7 @@ function newRun() {
 function buildLevel() {
   rnd = mulberry32(levelSeed());
   generateDungeon();
-  enemies = []; ground = []; projectiles = []; effects = [];
+  enemies = []; ground = []; projectiles = []; effects = []; pending = [];
   const start = rooms[0];
   P.x = start.cx * TS + TS / 2; P.y = start.cy * TS + TS / 2;
   P.path = []; P.target = null; P.pickup = null;
@@ -94,11 +99,11 @@ function msg(s) { messages.push({ s, t: 0 }); if (messages.length > 4) messages.
 // ===================================================================
 //  COMBAT
 // ===================================================================
-function hurtEnemy(e, dmg, crit) {
+function hurtEnemy(e, dmg, crit, color) {
   if (e.dead) return;
   dmg = Math.max(1, Math.round(dmg));
   e.hp -= dmg; e.flash = 0.12; e.aggro = true;
-  addText(e.x + (rnd() - 0.5) * 12, e.y + (rnd() - 0.5) * 12, String(dmg), crit ? '#ffb020' : '#ffffff', crit ? 20 : 14);
+  addText(e.x + (rnd() - 0.5) * 12, e.y + (rnd() - 0.5) * 12, String(dmg), color || (crit ? '#ffb020' : '#ffffff'), crit ? 20 : 14);
   if (e.hp <= 0) killEnemy(e);
 }
 
@@ -118,26 +123,21 @@ function killEnemy(e) {
 
 function hurtPlayer(raw) {
   if (P.dead) return;
-  const dmg = Math.max(1, Math.round(raw * 20 / (20 + armorVal())));
+  if (P.bonus.dodge && rnd() < P.bonus.dodge) { addText(P.x, P.y, 'Dodge', '#9fe8ff', 14); return; }
+  let dmg = raw * 20 / (20 + armorVal()) * (1 - P.bonus.reduce);
+  if (P.buffs.evade > 0) dmg *= 0.4;
+  dmg = Math.max(1, Math.round(dmg));
   P.hp -= dmg; P.flash = 0.15;
   addText(P.x, P.y, String(dmg), '#ff4040', 16);
-  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deadTime = time; invOpen = false; P.path = []; P.target = null; mouse.down = false; saveBest(); }
+  if (P.hp <= 0) { P.hp = 0; P.dead = true; P.deadTime = time; invOpen = false; treeOpen = false; P.path = []; P.target = null; mouse.down = false; saveBest(); }
 }
 
-function meleeAttack(e) {
-  P.atkCd = 0.45; P.swing = 0.15;
-  P.face = Math.atan2(e.y - P.y, e.x - P.x);
-  const crit = rnd() < 0.1;
-  hurtEnemy(e, baseDmg() * (0.8 + rnd() * 0.4) * (crit ? 2 : 1), crit);
-  addEffect({ type: 'slash', x: P.x, y: P.y, a: P.face, dur: 0.15 });
-}
-
-function nearestEnemy(maxDist) {
+function nearestEnemy(maxDist, needLOS) {
   let best = null, bd = maxDist;
   for (const e of enemies) {
     if (e.dead) continue;
     const d = dist(P.x, P.y, e.x, e.y);
-    if (d < bd) { bd = d; best = e; }
+    if (d < bd && (!needLOS || clearLine(P.x, P.y, e.x, e.y, 3))) { bd = d; best = e; }
   }
   return best;
 }
@@ -147,20 +147,6 @@ function aimAngle() {
   if (t) return Math.atan2(t.y - P.y, t.x - P.x);
   if (lastPointerType === 'mouse') return Math.atan2(mouse.wy - P.y, mouse.wx - P.x);
   return P.face;
-}
-function castFireball() {
-  if (P.cd[0] > 0 || P.mp < 8 || P.dead) return;
-  P.mp -= 8; P.cd[0] = 0.35;
-  const a = aimAngle(); P.face = a;
-  projectiles.push({ x: P.x, y: P.y, vx: Math.cos(a) * 480, vy: Math.sin(a) * 480, r: 7, life: 1.3, friendly: true,
-    dmg: 10 + P.level * 4 + gear('dmg') * 0.5, color: '#ff8a1e' });
-}
-function castNova() {
-  if (P.cd[1] > 0 || P.mp < 25 || P.dead) return;
-  P.mp -= 25; P.cd[1] = 2.5;
-  const R = 150, dmg = 8 + P.level * 3 + gear('dmg') * 0.5;
-  addEffect({ type: 'ring', x: P.x, y: P.y, r0: 10, r1: R, dur: 0.4, color: '110,190,255' });
-  for (const e of enemies) if (!e.dead && dist(e.x, e.y, P.x, P.y) <= R + e.r) hurtEnemy(e, dmg * (0.85 + rnd() * 0.3));
 }
 function usePotion(kind) {
   if (P.dead || P.potCd > 0 || P.potions[kind] <= 0) return;
@@ -204,11 +190,17 @@ function groundAt(mx, my, pad) {
   return null;
 }
 
+const inAttackRange = e => {
+  const A = cls().atk, d = dist(P.x, P.y, e.x, e.y);
+  return A.kind === 'melee' ? d <= MELEE_RANGE + e.r + P.r : d <= A.range && clearLine(P.x, P.y, e.x, e.y, 3);
+};
+
 function updatePlayer(dt) {
   P.flash = Math.max(0, P.flash - dt); P.atkCd = Math.max(0, P.atkCd - dt); P.potCd = Math.max(0, P.potCd - dt);
   P.swing = Math.max(0, P.swing - dt);
-  P.cd[0] = Math.max(0, P.cd[0] - dt); P.cd[1] = Math.max(0, P.cd[1] - dt);
-  P.mp = Math.min(P.maxmp, P.mp + (3 + P.level * 0.2) * dt);
+  updateSkills(dt);
+  P.speed = P.baseSpeed * (P.buffs.evade > 0 ? 1.5 : 1);
+  P.mp = Math.min(P.maxmp, P.mp + manaRegen() * dt);
   P.repathT -= dt;
 
   if (mouse.down && mouse.mode === 'move' && P.repathT <= 0) {
@@ -218,20 +210,20 @@ function updatePlayer(dt) {
     const e = P.target;
     if (e.dead) { P.target = null; if (mouse.down) mouse.mode = 'move'; }
     else {
-      const d = dist(P.x, P.y, e.x, e.y);
-      if (d <= MELEE_RANGE + e.r + P.r) {
+      if (inAttackRange(e)) {
         P.path = []; P.face = Math.atan2(e.y - P.y, e.x - P.x);
-        if (P.atkCd <= 0) meleeAttack(e);
+        if (P.atkCd <= 0) autoAttack(e);
       } else if (P.repathT <= 0) { P.path = pathTo(P, e.x, e.y); P.repathT = 0.25; }
     }
   } else if (P.pickup) {
     if (!ground.includes(P.pickup)) P.pickup = null;
     else if (P.repathT <= 0) { P.path = pathTo(P, P.pickup.x, P.pickup.y); P.repathT = 0.3; }
   }
-  // auto-attack: hit the nearest enemy in melee range (no click needed), even while walking
+  // auto-attack (class flavored): melee hits the nearest enemy in reach, ranged classes fire at the nearest visible enemy
   if (P.atkCd <= 0) {
-    const n = nearestEnemy(MELEE_RANGE + P.r + 14);
-    if (n && dist(P.x, P.y, n.x, n.y) <= MELEE_RANGE + n.r + P.r) meleeAttack(n);
+    const A = cls().atk;
+    const n = A.kind === 'melee' ? nearestEnemy(MELEE_RANGE + P.r + 14) : nearestEnemy(A.range, true);
+    if (n && inAttackRange(n)) autoAttack(n);
   }
   const ox = P.x, oy = P.y;
   followPath(P, P.path, P.speed, dt);
@@ -265,7 +257,11 @@ function updateEnemies(dt) {
   for (const e of enemies) {
     if (e.dead) continue;
     e.atk -= dt; e.flash = Math.max(0, e.flash - dt); e.pathT -= dt;
+    tickStatus(e, dt);
+    if (e.dead) continue;
     const T = e.T, d = dist(e.x, e.y, P.x, P.y);
+    const spd = T.spd * (e.slow > 0 ? e.slowF : 1);
+    if (e.stun > 0) continue;                      // stunned: no movement or attacks
     if (!e.aggro) {
       if (!P.dead && d < T.aggro && (d < 110 || clearLine(e.x, e.y, P.x, P.y, 2))) e.aggro = true;
       else continue;
@@ -275,11 +271,11 @@ function updateEnemies(dt) {
     const chase = () => {
       if (clearLine(e.x, e.y, P.x, P.y, e.r)) { e.path = [{ x: P.x, y: P.y }]; }
       else if (e.pathT <= 0 || !e.path.length) { e.path = findPath(e.x, e.y, P.x, P.y, e.r); e.pathT = 0.5; }
-      followPath(e, e.path, T.spd, dt);
+      followPath(e, e.path, spd, dt);
     };
     if (T.ranged) {
       if (d < 150 && los) {                       // keep distance
-        moveEnt(e, (e.x - P.x) / d * T.spd * dt, (e.y - P.y) / d * T.spd * dt);
+        moveEnt(e, (e.x - P.x) / d * spd * dt, (e.y - P.y) / d * spd * dt);
       } else if (d <= 330 && los) {
         if (e.atk <= 0) { enemyShoot(e, Math.atan2(P.y - e.y, P.x - e.x), 230, e.dmg); e.atk = T.cd; }
       } else chase();
@@ -315,16 +311,20 @@ function updateProjectiles(dt) {
     p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
     let hit = p.life <= 0 || solid(p.x, p.y);
     if (!hit && p.friendly) {
-      for (const e of enemies) if (!e.dead && dist(p.x, p.y, e.x, e.y) < e.r + p.r) { hit = true; break; }
-    } else if (!hit && !P.dead && dist(p.x, p.y, P.x, P.y) < P.r + p.r) {
+      for (const e of enemies) {
+        if (e.dead || (p.hits && p.hits.has(e)) || dist(p.x, p.y, e.x, e.y) >= e.r + p.r) continue;
+        if (p.aoe) { hit = true; break; }            // exploding projectile: resolved below
+        projectileHit(p, e);
+        if (p.pierce > 0) { p.pierce--; (p.hits = p.hits || new Set()).add(e); } else { hit = true; break; }
+      }
+    } else if (!hit && !p.friendly && !P.dead && dist(p.x, p.y, P.x, P.y) < P.r + p.r) {
       hit = true; hurtPlayer(p.dmg);
     }
     if (hit) {
       p.dead = true;
-      if (p.friendly) {
-        const R = 52;
-        addEffect({ type: 'ring', x: p.x, y: p.y, r0: 6, r1: R, dur: 0.25, color: '255,140,30' });
-        for (const e of enemies) if (!e.dead && dist(p.x, p.y, e.x, e.y) < R + e.r) hurtEnemy(e, p.dmg * (0.85 + rnd() * 0.3));
+      if (p.friendly && p.aoe) {
+        addEffect({ type: 'ring', x: p.x, y: p.y, r0: 6, r1: p.aoe, dur: 0.25, color: p.ringColor || '255,140,30' });
+        for (const e of enemies) if (!e.dead && dist(p.x, p.y, e.x, e.y) < p.aoe + e.r) projectileHit(p, e);
       }
     }
   }
@@ -332,11 +332,12 @@ function updateProjectiles(dt) {
 }
 
 function update(dt) {
-  if (paused || titleOpen) return;
+  if (paused || titleOpen || classSelectOpen) return;
   time += dt; hintT = Math.max(0, hintT - dt);
   if (!P.dead) updatePlayer(dt);
   updateEnemies(dt);
   updateProjectiles(dt);
+  updatePending(dt);
   for (const t of texts) { t.t += dt; t.dz += 28 * dt; }
   texts = texts.filter(t => t.t < t.dur);
   for (const f of effects) f.t += dt;

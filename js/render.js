@@ -67,7 +67,8 @@ function groundEllipse(x, y, rad) {   // a world-space circle as seen in iso
 
 function drawEnemy(e, hov) {
   const s = e.T.sz, hs = s / 2, h = enemyH(e);
-  const col = e.flash > 0 ? '#ffffff' : e.T.color;
+  let col = e.flash > 0 ? '#ffffff' : e.T.color;
+  if (e.flash <= 0) { if (e.slow > 0) col = '#6fa8e8'; else if (e.pois) col = '#7ab83a'; }       // status tints
   shadow(e.x, e.y, hs);
   if (hov) {
     ctx.strokeStyle = '#ff4040'; ctx.lineWidth = 2; ctx.beginPath(); groundEllipse(e.x, e.y, hs + 4); ctx.stroke();
@@ -90,20 +91,30 @@ function drawEnemy(e, hov) {
 }
 
 function drawPlayer() {
+  const c = cls();
   shadow(P.x, P.y, 10);
-  let body = '#3b82c4';
-  if (P.armor) body = P.armor.rar === 0 ? '#8a9bb0' : RARITY_COLOR[P.armor.rar];
+  let body = c.color;
+  if (P.armor && P.armor.rar > 0) body = RARITY_COLOR[P.armor.rar];
   if (P.flash > 0) body = '#ff9a9a';
+  if (P.buffs.evade > 0) ctx.globalAlpha = 0.55;
   isoCyl(P.x, P.y, 9, 0, 24, shade(body, 1.2), shade(body, 0.85));
   isoBox(P.x - 5, P.y - 5, P.x + 5, P.y + 5, 24, 33, '#f6e0c0', '#c9a97f', '#e2c49a');
-  if (P.weapon) {
-    const a = P.face + (P.swing > 0 ? (P.swing / 0.15 - 0.5) * 1.6 : 0);
-    ctx.strokeStyle = RARITY_COLOR[P.weapon.rar]; ctx.lineWidth = 4;
-    ctx.beginPath();
-    ctx.moveTo(projX(P.x + Math.cos(a) * 8, P.y + Math.sin(a) * 8) - cam.x, projY(P.x + Math.cos(a) * 8, P.y + Math.sin(a) * 8, 16) - cam.y);
-    ctx.lineTo(projX(P.x + Math.cos(a) * 26, P.y + Math.sin(a) * 26) - cam.x, projY(P.x + Math.cos(a) * 26, P.y + Math.sin(a) * 26, 16) - cam.y);
-    ctx.stroke();
-  }
+  const sx = projX(P.x, P.y) - cam.x, sy = projY(P.x, P.y, 0) - cam.y;
+  if (P.cls === 'warrior') isoBox(P.x - 6, P.y - 6, P.x + 6, P.y + 6, 31, 36, '#c3cadb', '#7d8599', '#9aa3b8');                     // helmet
+  else if (P.cls === 'mage') { poly([[sx - 9, sy - 33], [sx + 9, sy - 33], [sx, sy - 56]], '#3a2f80', 'rgba(0,0,0,0.4)'); }          // pointed hat
+  else isoBox(P.x - 6, P.y - 6, P.x + 6, P.y + 6, 29, 37, '#24402f', '#16281d', '#1f3627');                                        // hood
+  if (P.buffs.warcry > 0) { ctx.strokeStyle = 'rgba(255,150,60,0.8)'; ctx.lineWidth = 2; ctx.beginPath(); groundEllipse(P.x, P.y, 16); ctx.stroke(); }
+  if (P.buffs.shadow) { ctx.strokeStyle = 'rgba(160,110,230,0.9)'; ctx.lineWidth = 2; ctx.beginPath(); groundEllipse(P.x, P.y, 14); ctx.stroke(); }
+  // held item: warrior's sword swings, mage's staff, rogue's dagger
+  const a = P.face + (P.swing > 0 ? (P.swing / 0.15 - 0.5) * 1.6 : 0);
+  const wc = P.cls === 'warrior' ? (P.weapon ? RARITY_COLOR[P.weapon.rar] : '#ddd') : P.cls === 'mage' ? '#8a5a2a' : '#e6e6e6';
+  const len = P.cls === 'mage' ? 30 : P.cls === 'rogue' ? 18 : 26;
+  ctx.strokeStyle = wc; ctx.lineWidth = P.cls === 'rogue' ? 3 : 4; ctx.beginPath();
+  ctx.moveTo(projX(P.x + Math.cos(a) * 8, P.y + Math.sin(a) * 8) - cam.x, projY(P.x + Math.cos(a) * 8, P.y + Math.sin(a) * 8, 16) - cam.y);
+  const tx = P.x + Math.cos(a) * len, ty = P.y + Math.sin(a) * len;
+  ctx.lineTo(projX(tx, ty) - cam.x, projY(tx, ty, 16) - cam.y); ctx.stroke();
+  if (P.cls === 'mage') { ctx.fillStyle = '#b48cff'; ctx.fillRect(projX(tx, ty) - cam.x - 3, projY(tx, ty, 16) - cam.y - 3, 6, 6); }
+  ctx.globalAlpha = 1;
 }
 
 function drawGroundItem(g, hoverG) {
@@ -136,10 +147,29 @@ function drawEffect(f) {
     ctx.beginPath(); groundEllipse(f.x, f.y, r);
     ctx.fillStyle = 'rgba(' + f.color + ',' + 0.18 * (1 - k) + ')'; ctx.fill();
     ctx.strokeStyle = 'rgba(' + f.color + ',' + (1 - k) + ')'; ctx.lineWidth = 5 * (1 - k) + 2; ctx.stroke();
+  } else if (f.type === 'marker') {                  // ground warning (meteor)
+    const r = f.r * (0.4 + 0.6 * k);
+    ctx.beginPath(); groundEllipse(f.x, f.y, f.r);
+    ctx.strokeStyle = 'rgba(' + f.color + ',0.35)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.beginPath(); groundEllipse(f.x, f.y, r);
+    ctx.fillStyle = 'rgba(' + f.color + ',' + (0.12 + 0.25 * k) + ')'; ctx.fill();
+    ctx.strokeStyle = 'rgba(' + f.color + ',0.9)'; ctx.lineWidth = 3; ctx.stroke();
+    const fy = projY(f.x, f.y, 260 * (1 - k)) - cam.y, fx = projX(f.x, f.y) - cam.x;   // the meteor itself, falling
+    ctx.fillStyle = '#ff9a3a'; ctx.fillRect(fx - 9, fy - 9, 18, 18); ctx.fillStyle = '#ffd96a'; ctx.fillRect(fx - 4, fy - 4, 8, 8);
+  } else if (f.type === 'bolt') {                    // lightning chain
+    ctx.strokeStyle = 'rgba(250,240,110,' + (1 - k) + ')'; ctx.lineWidth = 4 * (1 - k) + 1; ctx.beginPath();
+    f.pts.forEach((p, i) => {
+      const x = projX(p.x, p.y) - cam.x, y = projY(p.x, p.y, 16) - cam.y;
+      if (i) { const q = f.pts[i - 1], qx = projX(q.x, q.y) - cam.x, qy = projY(q.x, q.y, 16) - cam.y;
+               ctx.lineTo((x + qx) / 2 + ((i * 37) % 11) - 5, (y + qy) / 2 + ((i * 53) % 11) - 5); ctx.lineTo(x, y); }
+      else ctx.moveTo(x, y);
+    });
+    ctx.stroke();
   } else if (f.type === 'slash') {
     ctx.strokeStyle = 'rgba(255,255,255,' + (1 - k) + ')'; ctx.lineWidth = 3; ctx.beginPath();
-    for (let a = f.a - 0.9, n = 0; a <= f.a + 0.9; a += 0.15, n++) {
-      const wx = f.x + Math.cos(a) * 30, wy = f.y + Math.sin(a) * 30;
+    const rad = f.rad || 30, half = f.half || 0.9;
+    for (let a = f.a - half, n = 0; a <= f.a + half; a += 0.15, n++) {
+      const wx = f.x + Math.cos(a) * rad, wy = f.y + Math.sin(a) * rad;
       const sx = projX(wx, wy) - cam.x, sy = projY(wx, wy, 14) - cam.y;
       if (n) ctx.lineTo(sx, sy); else ctx.moveTo(sx, sy);
     }
