@@ -73,7 +73,7 @@ function drawEnemy(e, hov) {
   if (hov) {
     ctx.strokeStyle = '#ff4040'; ctx.lineWidth = 2; ctx.beginPath(); groundEllipse(e.x, e.y, hs + 4); ctx.stroke();
   }
-  if (e.type === 'archer') isoCyl(e.x, e.y, hs, 0, h, shade(col, 1.25), shade(col, 0.8));
+  if (e.T.ranged) isoCyl(e.x, e.y, hs, 0, h, shade(col, 1.25), shade(col, 0.8));
   else isoBox(e.x - hs, e.y - hs, e.x + hs, e.y + hs, 0, h, shade(col, 1.25), shade(col, 0.7), shade(col, 0.95));
   // eyes on the front-left face
   const ex = projX(e.x, e.y + hs) - cam.x, ey = projY(e.x, e.y + hs, h * 0.7) - cam.y;
@@ -177,10 +177,25 @@ function drawEffect(f) {
   }
 }
 
+function drawExitTile(e, cx, cy) {
+  const locked = e.locked, sealed = e.needBoss && enemies.some(b => b.boss && !b.dead);
+  const pal = locked || sealed ? ['#6b1f1f', '#a03030'] : e.kind === 'up' ? ['#1f4f8a', '#4a8ae0'] : e.kind === 'road' ? ['#8a6a1f', '#e0b040']
+            : e.kind === 'portal' ? ['#5a2a8a', '#b070f0'] : ['#1d7a3c', '#33c26a'];
+  for (let k = 0; k < 4; k++) {
+    const f = 1 - k * 0.22;
+    poly([[cx, cy - HH * f + k * 2], [cx + HW * f, cy + k * 2], [cx, cy + HH * f + k * 2], [cx - HW * f, cy + k * 2]], k & 1 ? pal[1] : pal[0]);
+  }
+  if (locked) {                                           // gate bars
+    ctx.strokeStyle = '#d04040'; ctx.lineWidth = 3; ctx.beginPath();
+    for (let k = -2; k <= 2; k++) { ctx.moveTo(cx + k * 9, cy - 22); ctx.lineTo(cx + k * 9, cy + 4); }
+    ctx.stroke();
+  }
+}
+
 function drawWorld() {
   const ptx = Math.floor(P.x / TS), pty = Math.floor(P.y / TS);
-  const bossLocked = enemies.some(e => e.boss);
   const draws = [];            // depth-sorted drawables: key = u + v (i.e. (x+y)/TS)
+  const th = theme();
 
   // pass 1: flat floor diamonds, collect wall blocks
   for (let j = 0; j < MH; j++) for (let i = 0; i < MW; i++) {
@@ -191,15 +206,10 @@ function drawWorld() {
     const t = map[idx];
     if (t === 1) { if (wallVis[idx]) draws.push({ k: i + j + 1, t: 0, i, j, cx, cy }); continue; }
     const h = ((i * 73856093) ^ (j * 19349663)) & 7;
-    poly([[cx, cy - HH], [cx + HW, cy], [cx, cy + HH], [cx - HW, cy]], ((i + j) & 1) ? '#4d453a' : '#463f35', 'rgba(0,0,0,0.18)');
-    if (h === 0) poly([[cx - 8, cy], [cx, cy - 4], [cx + 8, cy], [cx, cy + 4]], 'rgba(0,0,0,0.14)');
-    if (t === 2) {
-      const c1 = bossLocked ? '#6b1f1f' : '#1d7a3c', c2 = bossLocked ? '#a03030' : '#33c26a';
-      for (let k = 0; k < 4; k++) {
-        const f = 1 - k * 0.22;
-        poly([[cx, cy - HH * f + k * 2], [cx + HW * f, cy + k * 2], [cx, cy + HH * f + k * 2], [cx - HW * f, cy + k * 2]], k & 1 ? c2 : c1);
-      }
-    }
+    const pal = floorTint && floorTint[idx] ? th.alt : th.floor;
+    poly([[cx, cy - HH], [cx + HW, cy], [cx, cy + HH], [cx - HW, cy]], pal[(i + j) & 1], 'rgba(0,0,0,0.18)');
+    if (h === 0 && !isTown()) poly([[cx - 8, cy], [cx, cy - 4], [cx + 8, cy], [cx, cy + 4]], 'rgba(0,0,0,0.14)');
+    if (t === 2 || t === 3) { const ex = exitAt(i, j); if (ex) drawExitTile(ex, cx, cy); }
   }
   for (const f of effects) drawEffect(f);
 
@@ -207,6 +217,7 @@ function drawWorld() {
   const showHover = !P.dead && !invOpen && !(mouse.touch && !mouse.down);
   const hov = showHover ? enemyAt(mouse.x, mouse.y) : null;
   const hovG = showHover ? groundAt(mouse.x, mouse.y) : null;
+  const hovN = showHover && !mouse.touch ? npcAt(mouse.x, mouse.y) : null;
   const onScreen = (x, y) => { const sx = projX(x, y) - cam.x, sy = projY(x, y, 0) - cam.y; return sx > -80 && sx < W + 80 && sy > -120 && sy < H + 80; };
   for (const g of ground) if (onScreen(g.x, g.y)) draws.push({ k: (g.x + g.y) / TS, t: 1, o: g });
   for (const e of enemies) {
@@ -214,21 +225,34 @@ function drawWorld() {
     draws.push({ k: (e.x + e.y) / TS, t: 2, o: e });
   }
   for (const p of projectiles) if (onScreen(p.x, p.y)) draws.push({ k: (p.x + p.y) / TS, t: 3, o: p });
+  for (const n of npcs) if (onScreen(n.x, n.y)) draws.push({ k: (n.x + n.y) / TS, t: 5, o: n });
   draws.push({ k: (P.x + P.y) / TS, t: 4 });
   draws.sort((a, b) => a.k - b.k);
 
   const pk = ptx + pty + 1;
   for (const d of draws) {
     if (d.t === 0) {                                   // wall block
-      const x0 = d.i * TS, y0 = d.j * TS;
-      const front = d.i >= ptx && d.j >= pty && d.k > pk && d.i - ptx <= 4 && d.j - pty <= 4;   // would hide the player
+      const x0 = d.i * TS, y0 = d.j * TS, wi = wallTint ? wallTint[d.j * MW + d.i] : 0, wp = th.walls[wi] || th.walls[0], wh = wp.h || WALL_H;
+      const front = d.i >= ptx && d.j >= pty && d.k > pk && d.i - ptx <= 4 && d.j - pty <= 4 && wh > 20;   // would hide the player
       if (front) ctx.globalAlpha = 0.35;
-      isoBox(x0, y0, x0 + TS, y0 + TS, 0, WALL_H, '#5a6078', '#2b2f3d', '#3c4254');
+      isoBox(x0, y0, x0 + TS, y0 + TS, 0, wh, wp.top, wp.l, wp.r);
       ctx.globalAlpha = 1;
     } else if (d.t === 1) drawGroundItem(d.o, d.o === hovG);
     else if (d.t === 2) drawEnemy(d.o, d.o === hov);
     else if (d.t === 3) drawProjectile(d.o);
+    else if (d.t === 5) drawNpc(d.o, d.o === hovN);
     else drawPlayer();
+  }
+  // exit labels
+  for (const e of exits) {
+    const wx = (e.tx + 0.5) * TS, wy = (e.ty + 0.5) * TS;
+    if (!explored[e.ty * MW + e.tx] || !onScreen(wx, wy)) continue;
+    const locked = e.locked, sealed = e.needBoss && enemies.some(b => b.boss && !b.dead);
+    let lab = exitLabel(e), col = '#cfeccf';
+    const tz = WORLD[e.to];
+    if (tz && tz.recLevel && e.to !== zoneId && tz.type === 'dungeon') lab += '  (Lv ' + tz.recLevel + '+)';
+    if (locked) { lab += '  [LOCKED]'; col = '#ff9a9a'; } else if (sealed) { lab += '  [SEALED]'; col = '#ff9a9a'; }
+    text(lab, projX(wx, wy) - cam.x, projY(wx, wy, 0) - cam.y - (locked ? 34 : 24), col, 12, 'center');
   }
   // floating texts (always on top)
   for (const t of texts) {

@@ -6,8 +6,8 @@
 // player position, explored-map bits and best depth. Enemies/loot on the floor are NOT stored (the floor is rebuilt).
 
 const SAVE_KEY = 'tinydiablo_save';
-const SAVE_VERSION = 2;         // v1 saves (no class/skills) still load: they get default skills
-const OLD_SAVE_VERSIONS = [1];
+const SAVE_VERSION = 3;         // v3 adds the world (zone, unlocks). v1/v2 saves still load: they land in town 1 with their progress
+const OLD_SAVE_VERSIONS = [1, 2];
 
 let autosaveOK = true;      // false after a fresh run started while a save exists, until the player saves manually
 let titleOpen = false;      // start screen (Continue / New Game)
@@ -67,11 +67,26 @@ function parseSave(raw) {                 // -> clean save object, or null if mi
     }
     sk = { cls: s.cls, points: s.points, ranks, slots };
   }
+  // world (v3). Older saves start in the first town; clearing the old depth-3 boss counts as beating Dungeon 1.
+  let wd;
+  if (o.v < 3) {
+    wd = { zone: START_ZONE, floor: 1, town: START_ZONE, cleared: o.depth >= 4 ? { dun1: true } : {}, bestFloor: o.depth > 1 ? { dun1: Math.min(3, o.depth) } : {} };
+  } else {
+    const w = o.world;
+    if (!w || typeof w !== 'object') return null;
+    const zid = typeof w.zone === 'string' && WORLD[w.zone] ? w.zone : START_ZONE;
+    const cleared = {}, bestFloor = {};
+    if (w.cleared && typeof w.cleared === 'object') for (const id of Object.keys(w.cleared)) if (WORLD[id] && WORLD[id].type === 'dungeon' && w.cleared[id] === true) cleared[id] = true;
+    if (w.bestFloor && typeof w.bestFloor === 'object') for (const id of Object.keys(w.bestFloor)) if (WORLD[id] && WORLD[id].type === 'dungeon' && isInt(w.bestFloor[id], 1, WORLD[id].floors)) bestFloor[id] = w.bestFloor[id];
+    const zz = WORLD[zid];
+    wd = { zone: zid, floor: zz.type === 'dungeon' && isInt(w.floor, 1, zz.floors) ? w.floor : 1,
+           town: typeof w.town === 'string' && WORLD[w.town] && WORLD[w.town].type === 'town' ? w.town : START_ZONE, cleared, bestFloor };
+  }
   return {
-    skills: sk, savedAt: o.savedAt, seed: o.seed, depth: o.depth, best: isInt(o.best, 1, 9999) ? o.best : o.depth,
-    kills: isInt(o.kills, 0, 1e9) ? o.kills : 0, explored: exp,
+    world: wd, skills: sk, savedAt: o.savedAt, seed: o.seed, depth: o.depth, best: isInt(o.best, 1, 9999) ? o.best : o.depth,
+    kills: isInt(o.kills, 0, 1e9) ? o.kills : 0, explored: o.v < 3 ? null : exp,
     player: { level: p.level, xp: p.xp, hp: p.hp, mp: p.mp, gold: p.gold, potions: { hp: p.potions.hp, mp: p.potions.mp },
-              inv, weapon, armor, pos }
+              inv, weapon, armor, pos: o.v < 3 ? null : pos }
   };
 }
 
@@ -107,6 +122,7 @@ function saveGame() {
   if (!storageAvailable()) return { ok: false, error: 'Saving is unavailable (browser storage is blocked)' };
   const data = {
     v: SAVE_VERSION, savedAt: Date.now(), seed, depth, best: bestDepth, kills,
+    world: { zone: zoneId, floor, town: world.town, cleared: world.cleared, bestFloor: world.bestFloor },
     player: { level: P.level, xp: P.xp, hp: P.hp, mp: P.mp, gold: P.gold, potions: P.potions, inv: P.inv,
               weapon: P.weapon, armor: P.armor, x: P.x, y: P.y },
     skills: { cls: P.cls, points: P.skillPoints, ranks: P.ranks, slots: P.slots },
@@ -121,7 +137,7 @@ function saveGame() {
 function autosave(reason) {
   if (titleOpen || !P || P.dead || !autosaveOK) return;
   const r = saveGame();
-  if (r.ok) { if (reason === 'stairs') msg('Game autosaved'); }
+  if (r.ok) { if (reason === 'zone' || reason === 'boss') msg('Game autosaved'); }
   else if (!autosaveWarned) { autosaveWarned = true; msg(r.error); }
 }
 
@@ -129,8 +145,9 @@ function loadGame() {                     // -> true on success
   const c = refreshSave();
   if (c.status !== 'ok') return false;
   const d = c.data;
-  seed = d.seed; depth = d.depth; kills = d.kills;
-  bestDepth = Math.max(bestDepth, d.best);
+  seed = d.seed; kills = d.kills;
+  bestDepth = Math.max(bestDepth, d.best, d.depth);
+  world = { cleared: Object.assign({}, d.world.cleared), bestFloor: Object.assign({}, d.world.bestFloor), town: d.world.town };
   P = makePlayer(d.skills.cls);
   P.ranks = Object.assign({}, d.skills.ranks); P.slots = d.skills.slots.slice(); P.skillPoints = d.skills.points;
   const s = d.player;
@@ -138,10 +155,9 @@ function loadGame() {                     // -> true on success
   P.inv = s.inv; P.weapon = s.weapon; P.armor = s.armor;
   recalc(); P.hp = clamp(s.hp, 1, P.maxhp); P.mp = clamp(s.mp, 0, P.maxmp);
   messages = []; texts = [];
-  invOpen = false; hintT = 6;
-  buildLevel();                           // regenerates the same floor from (seed, depth)
-  if (s.pos && !blocked(s.pos.x, s.pos.y, P.r)) { P.x = s.pos.x; P.y = s.pos.y; }
-  if (d.explored) unpackExplored(d.explored);
+  invOpen = false; treeOpen = false; npcOpen = null; hintT = 6;
+  enterZone(d.world.zone, d.world.floor, { pos: s.pos });     // regenerates the same zone floor from (seed, zone, floor)
+  if (d.explored && zone.type !== 'town') unpackExplored(d.explored);
   reveal();
   autosaveOK = true;
   return true;
@@ -155,6 +171,6 @@ function deleteSave() {
 
 // autosave when the tab is hidden / closed
 // (only if the run has some progress, so just opening and closing the page never creates a save)
-const hasProgress = () => depth > 1 || P.level > 1 || P.xp > 0 || P.gold > 0 || kills > 0;
+const hasProgress = () => zoneId !== START_ZONE || Object.keys(world.cleared).length > 0 || P.level > 1 || P.xp > 0 || P.gold > 0 || kills > 0;
 document.addEventListener('visibilitychange', () => { if (document.hidden && P && hasProgress()) autosave('hidden'); });
 window.addEventListener('pagehide', () => { if (P && hasProgress()) autosave('pagehide'); });

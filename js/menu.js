@@ -81,5 +81,5 @@ function saveInfoLines() {              // for display: array of [text, color]
   if (sv.status === 'corrupt') return [['Saved data is invalid / old', '#ff8a8a'], ['and was ignored', '#ff8a8a']];
   if (sv.status === 'none') return [['No saved game', '#aaa']];
   const d = sv.data, when = new Date(d.savedAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  return [[CLASSES[d.skills.cls].name + '   Level ' + d.player.level + '   Depth ' + d.depth, '#ffe14d'], ['Gold ' + d.player.gold + '   Best depth ' + d.best, '#f5c518'], ['Saved ' + when, '#cfd8ff']];
+  return [[CLASSES[d.skills.cls].name + '   Level ' + d.player.level + '   ' + WORLD[d.world.zone].name, '#ffe14d'], ['Gold ' + d.player.gold + '   Best depth ' + d.best, '#f5c518'], ['Saved ' + when, '#cfd8ff']];
 }

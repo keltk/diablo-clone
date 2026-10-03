@@ -28,7 +28,11 @@ function generateDungeon() {
   far.stairs = true;
   stairs = { tx: far.cx, ty: far.cy };
   map[stairs.ty * MW + stairs.tx] = 2;
-  wallVis = new Uint8Array(MW * MH);       // walls adjacent to open floor (others are never visible)
+  computeWallVis();
+}
+
+function computeWallVis() {            // walls adjacent to open floor (others are never visible)
+  wallVis = new Uint8Array(MW * MH);
   for (let j = 0; j < MH; j++) for (let i = 0; i < MW; i++) {
     if (map[j * MW + i] !== 1) continue;
     for (let dj = -1; dj <= 1 && !wallVis[j * MW + i]; dj++) for (let di = -1; di <= 1; di++) {
@@ -53,7 +57,8 @@ function carveCorridor(a, b) {
 function solid(px, py) {
   const tx = Math.floor(px / TS), ty = Math.floor(py / TS);
   if (tx < 0 || ty < 0 || tx >= MW || ty >= MH) return true;
-  return map[ty * MW + tx] === 1;
+  const t = map[ty * MW + tx];
+  return t === 1 || t === 3;                 // 1 = wall, 3 = locked gate (an exit that is not open yet)
 }
 const blocked = (x, y, r) => solid(x - r, y - r) || solid(x + r, y - r) || solid(x - r, y + r) || solid(x + r, y + r);
 function moveEnt(e, dx, dy) {          // axis-separated => wall sliding
@@ -68,7 +73,7 @@ function clearLine(ax, ay, bx, by, r) {
   }
   return true;
 }
-const walkable = (tx, ty) => tx >= 0 && ty >= 0 && tx < MW && ty < MH && map[ty * MW + tx] !== 1;
+const walkable = (tx, ty) => tx >= 0 && ty >= 0 && tx < MW && ty < MH && map[ty * MW + tx] !== 1 && map[ty * MW + tx] !== 3;
 
 // tiny binary heap keyed on f
 class Heap {

@@ -116,7 +116,7 @@ const slotRectT = (g, i) => ({ x: g.slotX(i), y: g.slotsY, w: g.slotS, h: g.slot
 const toTree = (x, y) => ({ x: (x - TREE.x) / TREE.s, y: (y - TREE.y) / TREE.s });
 const inTree = (x, y) => { const p = toTree(x, y); return p.x >= 0 && p.y >= 0 && p.x < TREE.w && p.y < TREE.h; };
 
-function toggleTree() { if (P.dead) return; treeOpen = !treeOpen; invOpen = false; if (!treeOpen) { slotSel = null; } else if (!treeSel) treeSel = CLASSES[P.cls].start; }
+function toggleTree() { if (P.dead) return; treeOpen = !treeOpen; invOpen = false; npcOpen = null; if (!treeOpen) { slotSel = null; } else if (!treeSel) treeSel = CLASSES[P.cls].start; }
 function openSkillTree(slot) {
   treeOpen = true; invOpen = false; paused = false;
   slotSel = slot === undefined ? null : slot;
@@ -138,7 +138,10 @@ function treePress(x, y) {
     return;
   }
   if (inRect(g.respec, p.x, p.y)) {
-    if (performance.now() < respecArmed) { respecSkills(); respecArmed = 0; treeSel = c.start; slotSel = null; msg('Skills reset - points refunded'); }
+    const cost = respecCost();
+    if (!isTown()) msg('Visit a Trainer in town to reset skills');
+    else if (P.gold < cost) msg('Resetting costs ' + cost + ' gold');
+    else if (performance.now() < respecArmed) { respecArmed = 0; doRespec(cost); }
     else respecArmed = performance.now() + 3000;
     return;
   }
@@ -228,6 +231,6 @@ function drawTree() {
     let eqLabel = def.kind === 'passive' ? 'Passive' : r === 0 ? 'Learn first' : (slotSel === null && P.slots.includes(treeSel)) ? 'Unequip' : 'Equip to slot ' + (equipTarget() + 1);
     btnBox(g.equip, eqLabel, '#2a4a6a', canEquip);
   } else text('Tap a skill', dr.x + 10, dr.y + 22, '#888', 13, 'left');
-  btnBox(g.respec, performance.now() < respecArmed ? 'Tap again to reset' : 'Reset skills', performance.now() < respecArmed ? '#a02020' : '#5a3a3a', true);
+  btnBox(g.respec, !isTown() ? 'Reset (in town)' : performance.now() < respecArmed ? 'Tap again to reset' : 'Reset  ' + respecCost() + 'g', performance.now() < respecArmed ? '#a02020' : '#5a3a3a', isTown() && P.gold >= respecCost());
   ctx.restore();
 }

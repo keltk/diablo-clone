@@ -5,7 +5,7 @@
 // ===================================================================
 //  ACTIONS (shared by on-screen buttons and keyboard)
 // ===================================================================
-function toggleInventory() { if (!P.dead) { invOpen = !invOpen; invSel = null; treeOpen = false; slotSel = null; } }
+function toggleInventory() { if (!P.dead) { invOpen = !invOpen; invSel = null; treeOpen = false; slotSel = null; npcOpen = null; } }
 function togglePause() { if (P.dead || titleOpen || classSelectOpen) return; if (paused) closePause(); else openPause(); }
 function pressButton(id) {
   switch (id) {
@@ -80,12 +80,13 @@ function setMouse(p) { mouse.x = p.x; mouse.y = p.y; updateMouseWorld(); }
 function onPress(ev, p) {
   if (classSelectOpen) { classPress(p); return; }                 // class choice
   if (titleOpen || paused) { menuPress(p); return; }              // start screen / pause menu
-  if (P.dead) { if (time - P.deadTime > 0.6) openClassSelect(); return; }
+  if (P.dead) { if (time - P.deadTime > 0.6) respawn(); return; }
   if (invOpen && inPanel(p.x, p.y)) { panelPress(p.x, p.y, ev.button); return; }
   if (treeOpen && inTree(p.x, p.y)) { treePress(p.x, p.y); return; }
+  if (npcOpen && inPanel(p.x, p.y)) { npcPress(p.x, p.y); return; }
   const b = buttonAt(p.x, p.y);
   if (b) { b.pressT = time + 0.15; pressButton(b.id); return; }
-  if (invOpen || treeOpen) { invOpen = false; invSel = null; treeOpen = false; slotSel = null; return; }   // tap outside closes the panels
+  if (invOpen || treeOpen || npcOpen) { invOpen = false; invSel = null; treeOpen = false; slotSel = null; npcOpen = null; return; }   // tap outside closes the panels
   if (ev.pointerType === 'mouse' && ev.button !== 0) return;
   if (movePtr !== null) return;                                      // already steering with another finger
   movePtr = ev.pointerId;
@@ -93,6 +94,9 @@ function onPress(ev, p) {
   setMouse(p);
   mouse.down = true; P.repathT = 0;
   const pad = mouse.touch ? 16 : 0;
+  const n = npcAt(p.x, p.y, pad);
+  if (n) { mouse.mode = 'talk'; P.talk = n; P.target = null; P.pickup = null; P.path = []; return; }
+  P.talk = null;
   const e = enemyAt(p.x, p.y, pad);
   if (e) { mouse.mode = 'attack'; P.target = e; P.pickup = null; return; }
   const g = groundAt(p.x, p.y, pad);
@@ -152,9 +156,10 @@ window.addEventListener('keydown', ev => {
     case 'KeyQ': pressButton('hp'); break;
     case 'KeyW': pressButton('mp'); break;
     case 'KeyI': pressButton('inv'); break;
-    case 'Escape': invOpen = false; invSel = null; treeOpen = false; slotSel = null; break;
+    case 'Escape': invOpen = false; invSel = null; treeOpen = false; slotSel = null; npcOpen = null; break;
+    case 'KeyE': { const n = nearestNpc(110); if (n && !P.dead) openNpc(n); break; }
     case 'KeyP': pressButton('pause'); break;
-    case 'KeyR': if (P.dead) openClassSelect(); break;
+    case 'KeyR': if (P.dead) respawn(); break;
   }
 });
 window.addEventListener('resize', resize);

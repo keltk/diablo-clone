@@ -6,8 +6,8 @@
 //  LEVEL / RUN SETUP
 // ===================================================================
 const freshSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
-// Level layout + population is a pure function of (run seed, depth), so a save only needs those two numbers.
-const levelSeed = () => (seed ^ Math.imul(depth, 0x9E3779B1)) >>> 0;
+// Zone layouts + populations are a pure function of (run seed, zone id, floor) - see zoneSeed() in world.js -
+// so a save only needs those numbers.
 
 function makePlayer(clsId) {
   const c = CLASSES[clsId] || CLASSES.warrior;
@@ -19,7 +19,7 @@ function makePlayer(clsId) {
     weapon: { slot: 'weapon', rar: 0, name: 'Rusty Sword', dmg: 3, armor: 0, hp: 0, value: 5 },
     armor: null,
     skillPoints: 1, ranks: {}, slots: [null, null, null, null], cds: {},      // skills: the starter skill is learned for free
-    buffs: { warcry: 0, wcArmor: 0, evade: 0, shadow: false }, whirl: null, bonus: {}
+    buffs: { warcry: 0, wcArmor: 0, evade: 0, shadow: false }, whirl: null, bonus: {}, talk: null
   };
   p.ranks[c.start] = 1; p.slots[0] = c.start;
   return p;
@@ -27,46 +27,19 @@ function makePlayer(clsId) {
 
 function newRun(clsId) {
   seed = freshSeed();
-  depth = 1; kills = 0;
+  kills = 0;
   P = makePlayer(clsId || 'warrior');
   recalc(); P.hp = P.maxhp; P.mp = P.maxmp;
   messages = []; texts = [];
-  invOpen = false; treeOpen = false; hintT = 20;
+  invOpen = false; treeOpen = false; npcOpen = null; hintT = 20;
+  world = freshWorld();
   autosaveOK = !saveExists();      // never let a fresh run silently overwrite an existing save
-  buildLevel();
+  enterZone(START_ZONE, 1);
 }
+const buildLevel = () => enterZone(zoneId, floor);        // rebuild the current zone floor (same layout, fresh monsters)
 
-function buildLevel() {
-  rnd = mulberry32(levelSeed());
-  generateDungeon();
-  enemies = []; ground = []; projectiles = []; effects = []; pending = [];
-  const start = rooms[0];
-  P.x = start.cx * TS + TS / 2; P.y = start.cy * TS + TS / 2;
-  P.path = []; P.target = null; P.pickup = null;
-  // populate rooms
-  for (let i = 1; i < rooms.length; i++) {
-    const r = rooms[i];
-    const n = Math.min(6, ri(1, 2) + (depth >> 1) + (r.stairs ? 1 : 0));
-    for (let k = 0; k < n; k++) {
-      const t = rnd(), type = t < 0.15 + 0.03 * depth ? 'archer' : (depth >= 2 && t < 0.45) ? 'brute' : 'grunt';
-      spawnEnemy(type, r);
-    }
-  }
-  if (depth % 3 === 0) {
-    const r = rooms.find(q => q.stairs);
-    const b = spawnEnemy('boss', r, r.cx * TS + TS / 2, r.cy * TS + TS / 2 - TS * 1.5);
-    b.aggro = false;
-    msg('A powerful presence lurks near the stairs...');
-  }
-  rnd = mulberry32(freshSeed());     // back to a non-deterministic stream for combat/loot
-  for (let i = 0; i < MW * MH; i++) explored[i] = 0;
-  mmDirty = true; reveal();
-  msg('Depth ' + depth);
-  saveBest();
-}
-
-function spawnEnemy(type, room, x, y) {
-  const T = TYPES[type], mult = 1 + 0.3 * (depth - 1);
+function spawnEnemy(type, room, x, y, power, Tover) {
+  const T = Tover || TYPES[type], mult = power !== undefined ? power : 1 + 0.3 * (depth - 1);
   if (x === undefined) {
     x = (room.x + ri(0, room.w - 1)) * TS + TS / 2;
     y = (room.y + ri(0, room.h - 1)) * TS + TS / 2;
@@ -118,7 +91,7 @@ function killEnemy(e) {
     if (rnd() < 0.22 + (e.type === 'brute' ? 0.1 : 0)) drop({ kind: 'item', item: genItem(depth) });
     if (rnd() < 0.14) drop({ kind: rnd() < 0.6 ? 'hp' : 'mp' });
   }
-  if (e.boss) { msg('The Overlord is slain! The stairs are unlocked.'); addEffect({ type: 'ring', x: e.x, y: e.y, r0: 10, r1: 220, dur: 0.8, color: '255,80,120' }); }
+  if (e.boss) bossSlain(e);
 }
 
 function hurtPlayer(raw) {
@@ -218,7 +191,12 @@ function updatePlayer(dt) {
   } else if (P.pickup) {
     if (!ground.includes(P.pickup)) P.pickup = null;
     else if (P.repathT <= 0) { P.path = pathTo(P, P.pickup.x, P.pickup.y); P.repathT = 0.3; }
+  } else if (P.talk) {                                  // walking up to an NPC
+    const n = P.talk;
+    if (dist(P.x, P.y, n.x, n.y) <= 52) { P.path = []; P.talk = null; P.face = Math.atan2(n.y - P.y, n.x - P.x); openNpc(n); }
+    else if (P.repathT <= 0) { P.path = pathTo(P, n.x, n.y); P.repathT = 0.3; }
   }
+  if (npcOpen && dist(P.x, P.y, npcOpen.npc.x, npcOpen.npc.y) > 160) npcOpen = null;     // walked away
   // auto-attack (class flavored): melee hits the nearest enemy in reach, ranged classes fire at the nearest visible enemy
   if (P.atkCd <= 0) {
     const A = cls().atk;
@@ -244,12 +222,9 @@ function updatePlayer(dt) {
     ground.splice(i, 1);
   }
 
-  // stairs
-  const tx = Math.floor(P.x / TS), ty = Math.floor(P.y / TS);
-  if (tx === stairs.tx && ty === stairs.ty) {
-    if (enemies.some(e => e.boss && !e.dead)) { if (time > fullMsgT) { msg('The stairs are sealed until the Overlord dies.'); fullMsgT = time + 2; } }
-    else { depth++; buildLevel(); autosave('stairs'); }
-  }
+  // exits (stairs, portals, road ends)
+  const ex = exitAt(Math.floor(P.x / TS), Math.floor(P.y / TS));
+  if (ex) useExit(ex);
   reveal();
 }
 

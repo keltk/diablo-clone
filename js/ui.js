@@ -126,8 +126,9 @@ function drawHUD() {
   box(10, 30, 230, 10, '#222'); ctx.fillStyle = '#8f5bd6'; ctx.fillRect(10, 30, 230 * P.xp / need, 10);
   text('XP ' + P.xp + '/' + need, 125, 35, '#fff', 10, 'center');
   text('Gold ' + P.gold, 10, 54, '#f5c518', 14);
-  text('Depth ' + depth + '  (best ' + bestDepth + ')', 10, 74, '#cfd8ff', 14);
-  text(enemies.length ? 'Enemies: ' + enemies.length : 'Level cleared!', 140, 54, enemies.length ? '#ff9a9a' : '#7dff9a', 13);
+  text(zoneLabel(), 10, 74, isTown() ? '#9fe8b0' : '#cfd8ff', 14);
+  if (isTown()) text('Safe', 190, 54, '#7dff9a', 13);
+  else text(enemies.length ? 'Enemies: ' + enemies.length : 'Cleared!', 140, 54, enemies.length ? '#ff9a9a' : '#7dff9a', 13);
   ctx.restore();
 
   // minimap (top-down, top-right)
@@ -136,7 +137,7 @@ function drawHUD() {
     for (let j = 0; j < MH; j++) for (let i = 0; i < MW; i++) {
       if (!explored[j * MW + i]) continue;
       const t = map[j * MW + i];
-      m.fillStyle = t === 1 ? '#222633' : t === 2 ? '#33c26a' : '#6a6458';
+      m.fillStyle = t === 1 ? '#222633' : t === 2 ? '#33c26a' : t === 3 ? '#a03030' : '#6a6458';
       m.fillRect(i * 2, j * 2, 2, 2);
     }
     mmDirty = false;
@@ -145,6 +146,8 @@ function drawHUD() {
   ctx.drawImage(mmCanvas, W - 136, 14);
   ctx.fillStyle = '#ff4040';
   for (const e of enemies) if (dist(e.x, e.y, P.x, P.y) < 12 * TS) ctx.fillRect(W - 136 + (e.x / TS) * 2 - 1, 14 + (e.y / TS) * 2 - 1, 3, 3);
+  ctx.fillStyle = '#ffe14d';
+  for (const n of npcs) ctx.fillRect(W - 136 + (n.x / TS) * 2 - 1, 14 + (n.y / TS) * 2 - 1, 3, 3);
   ctx.fillStyle = '#fff'; ctx.fillRect(W - 136 + (P.x / TS) * 2 - 1, 14 + (P.y / TS) * 2 - 1, 3, 3);
 
   // boss bar + messages sit below the top panels
@@ -173,8 +176,8 @@ function drawHUD() {
     ctx.globalAlpha = Math.min(1, hintT);
     const hs = Math.round(13 * Math.min(HUD.s, 1.2));
     const segs = touchDevice
-      ? ['Tap to move (hold to keep walking)', 'tap an enemy to chase it', 'you auto-attack when close', 'buttons: skills & potions']
-      : ['Click to move (hold to walk)', 'click an enemy to chase it', 'auto-attacks when close', '1-4 Skills', 'T Skill tree', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
+      ? ['Tap to move (hold to keep walking)', 'tap an NPC to talk', 'you auto-attack when close', 'buttons: skills & potions']
+      : ['Click to move (hold to walk)', 'click an NPC to talk (or E)', 'auto-attacks when close', '1-4 Skills', 'T Skill tree', 'Q Health', 'W Mana', 'I Inventory', 'P Pause'];
     ctx.font = 'bold ' + hs + 'px monospace';
     const lines = []; let cur = '';
     for (const sg of segs) {                       // greedy word-wrap of the hint segments to the screen width
@@ -200,7 +203,7 @@ function drawMenu() {
   lines.forEach((l, i) => text(l[0], cx, by + 40 + i * 22, l[1], 15 * Math.max(k, 0.85), 'center'));
   if (!titleOpen) {
     const blocked = saveCache && saveCache.status === 'blocked';
-    text('Autosave: ' + (blocked ? 'unavailable' : autosaveOK ? 'on (stairs, tab close)' : 'off - Save Game to enable'), cx, by + bh + 16,
+    text('Autosave: ' + (blocked ? 'unavailable' : autosaveOK ? 'on (zone change, tab close)' : 'off - Save Game to enable'), cx, by + bh + 16,
       blocked ? '#ff8a8a' : autosaveOK ? '#7dff9a' : '#ffb070', 12, 'center');
   }
   if (performance.now() < menu.msgUntil) text(menu.msg, cx, by + bh + 38, menu.msgBad ? '#ff7070' : '#9fe39f', 15 * Math.max(k, 0.85), 'center');
@@ -223,15 +226,16 @@ function render() {
   if (!titleOpen && !classSelectOpen) drawHUD();
   if (invOpen) drawInventory();
   if (treeOpen) drawTree();
+  if (npcOpen) drawNpcPanel();
   const k = Math.min(1, W / 700);                                 // text scale for full-screen overlays
   if (paused || titleOpen) drawMenu();
   if (classSelectOpen) drawClassSelect();
   if (P.dead && !classSelectOpen) {
     ctx.fillStyle = 'rgba(40,0,0,0.75)'; ctx.fillRect(0, 0, W, H);
     text('YOU DIED', W / 2, H / 2 - 70, '#e03030', 64 * k, 'center');
-    text('Depth ' + depth + '   Level ' + P.level + '   Kills ' + kills + '   Gold ' + P.gold, W / 2, H / 2, '#ddd', 20 * Math.max(k, 0.75), 'center');
-    text('Best depth: ' + bestDepth, W / 2, H / 2 + 34, '#f5c518', 18 * Math.max(k, 0.8), 'center');
-    text(touchDevice ? 'Tap to restart (pick a class)' : 'Tap or press R to restart', W / 2, H / 2 + 80, '#fff', 26 * Math.max(k, 0.8), 'center');
+    text(zoneLabel() + '   Level ' + P.level + '   Kills ' + kills, W / 2, H / 2, '#ddd', 20 * Math.max(k, 0.75), 'center');
+    text('You lose ' + Math.floor(P.gold * 0.1) + ' gold and return to ' + (WORLD[world.town] || WORLD[START_ZONE]).name, W / 2, H / 2 + 34, '#f5c518', 18 * Math.max(k, 0.8), 'center');
+    text(touchDevice ? 'Tap to return to town' : 'Tap or press R to return to town', W / 2, H / 2 + 80, '#fff', 26 * Math.max(k, 0.8), 'center');
   }
   if (!classSelectOpen) text('seed ' + seed, W - 8, 8 + MH * 2 + 26, 'rgba(255,255,255,0.35)', 10, 'right');
 }
