@@ -15,9 +15,13 @@ function frame(now) {
 
 mmCanvas = document.createElement('canvas'); mmCanvas.width = MW * 2; mmCanvas.height = MH * 2;
 resize();
+refreshSave();
 newRun();
+titleOpen = saveCache.status === 'ok';                     // offer Continue / New Game when a save exists
+if (saveCache.status === 'corrupt') msg('Saved data was invalid and has been ignored');
+if (saveCache.status === 'blocked') msg('Saving unavailable (browser storage is blocked)');
 update(0);
 requestAnimationFrame(t => { last = t; frame(t); });
 
 // test/debug hook (harmless)
-window.__game = { update, render, get state() { return { P, enemies, ground, depth, map, rooms, stairs, mouse, HUD, PANEL, VZ, W, H, invOpen, paused, newRun, pressButton, buildLevel, genItem, findPath }; } };
+window.__game = { update, render, get state() { return { P, enemies, ground, depth, map, rooms, stairs, mouse, HUD, PANEL, VZ, W, H, invOpen, paused, titleOpen, autosaveOK, saveCache, seed, kills, menu, newRun, saveGame, loadGame, deleteSave, menuAction, menuButtons, pressButton, buildLevel, genItem, findPath }; } };

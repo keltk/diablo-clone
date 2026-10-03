@@ -6,7 +6,7 @@
 //  ACTIONS (shared by on-screen buttons and keyboard)
 // ===================================================================
 function toggleInventory() { if (!P.dead) { invOpen = !invOpen; invSel = null; } }
-function togglePause() { if (!P.dead) paused = !paused; }
+function togglePause() { if (P.dead || titleOpen) return; if (paused) closePause(); else openPause(); }
 function pressButton(id) {
   switch (id) {
     case 'fire': castFireball(); break;
@@ -78,8 +78,8 @@ function pointerPos(ev) {
 function setMouse(p) { mouse.x = p.x; mouse.y = p.y; updateMouseWorld(); }
 
 function onPress(ev, p) {
+  if (titleOpen || paused) { menuPress(p); return; }              // start screen / pause menu
   if (P.dead) { if (time - P.deadTime > 0.6) newRun(); return; }
-  if (paused) { paused = false; return; }
   if (invOpen && inPanel(p.x, p.y)) { panelPress(p.x, p.y, ev.button); return; }
   const b = buttonAt(p.x, p.y);
   if (b) { b.pressT = time + 0.15; pressButton(b.id); return; }
@@ -127,6 +127,15 @@ for (const t of ['gesturestart', 'gesturechange', 'gestureend', 'dblclick', 'sel
 // ===================================================================
 window.addEventListener('keydown', ev => {
   if (ev.repeat) return;
+  if (titleOpen) {                                   // start screen shortcuts
+    if (ev.code === 'Enter' || ev.code === 'KeyC') { if (saveExists()) menuAction('continue'); }
+    else if (ev.code === 'KeyN') menuAction('new');
+    return;
+  }
+  if (paused) {                                      // pause menu: only resume keys work
+    if (ev.code === 'KeyP' || ev.code === 'Escape') closePause();
+    return;
+  }
   switch (ev.code) {
     case 'Digit1': case 'Numpad1': pressButton('fire'); break;
     case 'Digit2': case 'Numpad2': pressButton('nova'); break;

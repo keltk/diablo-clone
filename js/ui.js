@@ -156,7 +156,7 @@ function drawHUD() {
   // on-screen buttons
   for (const b of HUD.buttons) drawButton(b);
 
-  if (hintT > 0) {
+  if (hintT > 0 && !paused) {
     ctx.globalAlpha = Math.min(1, hintT);
     const hs = Math.round(13 * Math.min(HUD.s, 1.2));
     const segs = touchDevice
@@ -174,20 +174,43 @@ function drawHUD() {
   }
 }
 
+function drawMenu() {
+  ctx.fillStyle = titleOpen ? 'rgba(0,0,0,0.82)' : 'rgba(0,0,0,0.7)'; ctx.fillRect(0, 0, W, H);
+  const lay = menuButtons(), k = Math.max(0.75, Math.min(1, W / 600));
+  const cx = lay.infoX, y0 = lay.infoY;
+  text(titleOpen ? 'TINY DIABLO' : 'PAUSED', cx, y0, titleOpen ? '#e8d9a8' : '#fff', 40 * k, 'center');
+  // save info box
+  const bw = Math.min(380, lay.twoCol ? W / 2 - 40 : W - 32), by = y0 + 36 * k + 8, bh = 112;
+  box(cx - bw / 2, by, bw, bh, 'rgba(20,18,26,0.9)', '#8a7a55');
+  text(titleOpen ? 'Saved game' : 'Save slot', cx, by + 16, '#8a7a55', 12, 'center');
+  const lines = saveInfoLines();
+  lines.forEach((l, i) => text(l[0], cx, by + 40 + i * 22, l[1], 15 * Math.max(k, 0.85), 'center'));
+  if (!titleOpen) {
+    const blocked = saveCache && saveCache.status === 'blocked';
+    text('Autosave: ' + (blocked ? 'unavailable' : autosaveOK ? 'on (stairs, tab close)' : 'off - Save Game to enable'), cx, by + bh + 16,
+      blocked ? '#ff8a8a' : autosaveOK ? '#7dff9a' : '#ffb070', 12, 'center');
+  }
+  if (performance.now() < menu.msgUntil) text(menu.msg, cx, by + bh + 38, menu.msgBad ? '#ff7070' : '#9fe39f', 15 * Math.max(k, 0.85), 'center');
+  // buttons
+  const cf = menuConfirm();
+  for (const b of lay.list) {
+    ctx.fillStyle = b.on ? b.col : '#25252b'; ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeStyle = b.on ? (cf && (b.id === cf) ? '#fff' : '#8a7a55') : '#3a3a42'; ctx.lineWidth = 3; ctx.strokeRect(b.x + 1.5, b.y + 1.5, b.w - 3, b.h - 3);
+    text(b.label, b.x + b.w / 2, b.y + b.h / 2, b.on ? '#fff' : '#777', 19 * Math.max(k, 0.85), 'center');
+  }
+  if (!titleOpen) text('P / Esc: resume', lay.list[0].x + lay.list[0].w / 2, lay.list[lay.list.length - 1].y + lay.list[0].h + 22, '#888', 12, 'center');
+}
+
 function render() {
   ctx.setTransform(cv.width / W, 0, 0, cv.height / H, 0, 0);     // logical units -> backing-store pixels
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
   drawWorld();
   ctx.fillStyle = vignette; ctx.fillRect(0, 0, W, H);
   if (P.flash > 0) { ctx.fillStyle = 'rgba(255,0,0,' + (P.flash * 1.2) + ')'; ctx.fillRect(0, 0, W, H); }
-  drawHUD();
+  if (!titleOpen) drawHUD();
   if (invOpen) drawInventory();
   const k = Math.min(1, W / 700);                                 // text scale for full-screen overlays
-  if (paused) {
-    ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fillRect(0, 0, W, H);
-    text('PAUSED', W / 2, H / 2 - 20, '#fff', 36 * k, 'center');
-    text('tap anywhere (or P) to resume', W / 2, H / 2 + 24, '#ccc', 18 * Math.max(k, 0.8), 'center');
-  }
+  if (paused || titleOpen) drawMenu();
   if (P.dead) {
     ctx.fillStyle = 'rgba(40,0,0,0.75)'; ctx.fillRect(0, 0, W, H);
     text('YOU DIED', W / 2, H / 2 - 70, '#e03030', 64 * k, 'center');

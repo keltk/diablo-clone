@@ -5,11 +5,12 @@
 // ===================================================================
 //  LEVEL / RUN SETUP
 // ===================================================================
-function newRun() {
-  seed = (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
-  rnd = mulberry32(seed);
-  depth = 1; kills = 0;
-  P = {
+const freshSeed = () => (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+// Level layout + population is a pure function of (run seed, depth), so a save only needs those two numbers.
+const levelSeed = () => (seed ^ Math.imul(depth, 0x9E3779B1)) >>> 0;
+
+function makePlayer() {
+  return {
     x: 0, y: 0, r: 10, speed: 170,
     hp: 100, maxhp: 100, mp: 50, maxmp: 50, level: 1, xp: 0, gold: 0,
     flash: 0, atkCd: 0, potCd: 0, cd: [0, 0], path: [], target: null, pickup: null, repathT: 0,
@@ -17,13 +18,21 @@ function newRun() {
     weapon: { slot: 'weapon', rar: 0, name: 'Rusty Sword', dmg: 3, armor: 0, hp: 0, value: 5 },
     armor: null
   };
+}
+
+function newRun() {
+  seed = freshSeed();
+  depth = 1; kills = 0;
+  P = makePlayer();
   recalc(); P.hp = P.maxhp; P.mp = P.maxmp;
   messages = []; texts = [];
   invOpen = false; hintT = 20;
+  autosaveOK = !saveExists();      // never let a fresh run silently overwrite an existing save
   buildLevel();
 }
 
 function buildLevel() {
+  rnd = mulberry32(levelSeed());
   generateDungeon();
   enemies = []; ground = []; projectiles = []; effects = [];
   const start = rooms[0];
@@ -44,6 +53,7 @@ function buildLevel() {
     b.aggro = false;
     msg('A powerful presence lurks near the stairs...');
   }
+  rnd = mulberry32(freshSeed());     // back to a non-deterministic stream for combat/loot
   for (let i = 0; i < MW * MH; i++) explored[i] = 0;
   mmDirty = true; reveal();
   msg('Depth ' + depth);
@@ -246,7 +256,7 @@ function updatePlayer(dt) {
   const tx = Math.floor(P.x / TS), ty = Math.floor(P.y / TS);
   if (tx === stairs.tx && ty === stairs.ty) {
     if (enemies.some(e => e.boss && !e.dead)) { if (time > fullMsgT) { msg('The stairs are sealed until the Overlord dies.'); fullMsgT = time + 2; } }
-    else { depth++; buildLevel(); }
+    else { depth++; buildLevel(); autosave('stairs'); }
   }
   reveal();
 }
@@ -322,7 +332,7 @@ function updateProjectiles(dt) {
 }
 
 function update(dt) {
-  if (paused) return;
+  if (paused || titleOpen) return;
   time += dt; hintT = Math.max(0, hintT - dt);
   if (!P.dead) updatePlayer(dt);
   updateEnemies(dt);
